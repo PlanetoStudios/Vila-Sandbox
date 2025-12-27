@@ -1,0 +1,3511 @@
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const yokoDisplay = document.getElementById("yokoDisplay");
+
+// Habilita suavização e melhores composições
+ctx.imageSmoothingEnabled = true;
+ctx.imageSmoothingQuality = "high";
+
+// utilitário: desenha um brilho suave (bloom) ao redor de formas
+function withGlow(color, blur, drawFn) {
+  ctx.save();
+  // desenha brilho por baixo
+  ctx.shadowColor = color;
+  ctx.shadowBlur = blur;
+  ctx.globalCompositeOperation = "lighter";
+  drawFn();
+  ctx.restore();
+  // desenha o objeto normalmente depois (caller must draw)
+}
+
+// ajusta o canvas ao tamanho visível
+function resizeCanvas() {
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+}
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
+let mode = "human";
+let world = "earth"; // 'earth', 'mars', 'moon'
+let yoko = 0;
+let lastTime = null;
+
+ // controle de simulação
+let isPaused = false;
+let simSpeed = 1; // 1x, 2x, 4x, etc.
+
+// botões de controle de simulação
+const pauseBtn = document.getElementById("pauseBtn");
+const speedBtns = document.querySelectorAll(".speedBtn");
+
+function updateSpeedButtons() {
+  speedBtns.forEach((btn) => {
+    const s = Number(btn.dataset.speed);
+    if (s === simSpeed) {
+      btn.style.background = "#ff9800";
+    } else {
+      btn.style.background = "#555";
+    }
+  });
+}
+
+pauseBtn.addEventListener("click", () => {
+  isPaused = !isPaused;
+  pauseBtn.textContent = isPaused ? "▶️" : "⏸️";
+});
+
+speedBtns.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    simSpeed = Number(btn.dataset.speed) || 1;
+    isPaused = false;
+    pauseBtn.textContent = "⏸️";
+    updateSpeedButtons();
+  });
+});
+
+// estado inicial dos botões de velocidade
+updateSpeedButtons();
+
+// troca de modo pelos botões da interface
+document.querySelectorAll('#ui button[data-mode]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    mode = btn.dataset.mode;
+  });
+});
+
+// troca de mundo
+document.querySelectorAll('#ui button[data-world]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    world = btn.dataset.world;
+    // visual feedback
+    document.querySelectorAll('#ui button[data-world]').forEach((b) => {
+      b.style.outline = b === btn ? "2px solid #fff" : "none";
+      b.style.opacity = b === btn ? "1" : "0.82";
+    });
+  });
+});
+
+const humans = [];
+const monsters = [];
+const gefs = [];
+const rhinos = [];
+const aliens = [];
+const resources = [];
+const houses = [];
+const farms = [];
+const markets = [];
+const gameShops = [];
+const mines = [];
+const cats = [];
+const dogs = [];
+
+// arraste de cidades pequenas
+let draggingCity = null;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
+let didDragCity = false;
+
+// cidades pequenas
+const smallCities = [];
+let smallCityCreated = false;
+
+const resourcePower = {
+  wood: 1,
+  stone: 2,
+  iron: 4,
+  gold: 5,
+  diamond: 8,
+  ruby: 10,
+  copper: 3,
+  lapis: 4,
+  sapphire: 7,
+  netherite: 12,
+  amandita: 16, // minério raro encontrado na mina
+};
+
+canvas.addEventListener("mousedown", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  draggingCity = null;
+  didDragCity = false;
+
+  // verificar se clicou em alguma cidade pequena
+  for (let i = smallCities.length - 1; i >= 0; i--) {
+    const city = smallCities[i];
+    // hitbox simples ao redor da cidade
+    if (Math.abs(x - city.x) < 60 && Math.abs(y - city.y) < 130) {
+      draggingCity = city;
+      dragOffsetX = x - city.x;
+      dragOffsetY = y - city.y;
+      break;
+    }
+  }
+});
+
+canvas.addEventListener("mousemove", (e) => {
+  if (!draggingCity) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  didDragCity = true;
+
+  // atualizar posição da cidade, mantendo dentro dos limites
+  const marginX = 60;
+  const marginY = 130;
+  draggingCity.x = Math.max(
+    marginX,
+    Math.min(canvas.width - marginX, x - dragOffsetX)
+  );
+  draggingCity.y = Math.max(
+    marginY,
+    Math.min(canvas.height - marginY, y - dragOffsetY)
+  );
+});
+
+canvas.addEventListener("mouseup", () => {
+  draggingCity = null;
+});
+
+// --- Suporte a toque para mover cidades pequenas no celular ---
+canvas.addEventListener(
+  "touchstart",
+  (e) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = touch.clientX - rect.left;
+    const y = touch.clientY - rect.top;
+
+    draggingCity = null;
+    didDragCity = false;
+
+    for (let i = smallCities.length - 1; i >= 0; i--) {
+      const city = smallCities[i];
+      if (Math.abs(x - city.x) < 60 && Math.abs(y - city.y) < 130) {
+        draggingCity = city;
+        dragOffsetX = x - city.x;
+        dragOffsetY = y - city.y;
+        e.preventDefault();
+        break;
+      }
+    }
+  },
+  { passive: false }
+);
+
+canvas.addEventListener(
+  "touchmove",
+  (e) => {
+    if (!draggingCity) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = touch.clientX - rect.left;
+    const y = touch.clientY - rect.top;
+
+    didDragCity = true;
+
+    const marginX = 60;
+    const marginY = 130;
+    draggingCity.x = Math.max(
+      marginX,
+      Math.min(canvas.width - marginX, x - dragOffsetX)
+    );
+    draggingCity.y = Math.max(
+      marginY,
+      Math.min(canvas.height - marginY, y - dragOffsetY)
+    );
+
+    e.preventDefault();
+  },
+  { passive: false }
+);
+
+canvas.addEventListener(
+  "touchend",
+  () => {
+    draggingCity = null;
+  },
+  { passive: false }
+);
+
+canvas.addEventListener("click", (e) => {
+  // se foi um arraste de cidade, não spawnar nada
+  if (didDragCity) {
+    didDragCity = false;
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  if (mode === "human") {
+    // 15% dono de mercado, 5% criador de jogos, 10% escavador, 20% construtor, resto guerreiro normal
+    const r = Math.random();
+    let role = "normal";
+    if (r < 0.15) role = "marketOwner";
+    else if (r < 0.20) role = "gameDev"; // criador de jogos
+    else if (r < 0.30) role = "miner"; // escavador
+    else if (r < 0.50) role = "builder";
+    humans.push(new Human(x, y, role));
+  } else if (mode === "monster") {
+    monsters.push(new Monster(x, y));
+  } else if (mode === "gef") {
+    const newGef = new Gef(x, y);
+    gefs.push(newGef);
+    buildGameShopsForGameCreators(newGef);
+  } else if (mode === "rhino") {
+    rhinos.push(new Rhino(x, y));
+  } else if (mode === "alien") {
+    aliens.push(new Alien(x, y));
+  } else {
+    resources.push(new Resource(x, y, mode));
+  }
+});
+
+// encontra o alvo mais próximo em uma lista
+function findNearest(source, list) {
+  let nearest = null;
+  let bestDist = Infinity;
+  for (const item of list) {
+    const d = dist(source, item);
+    if (d < bestDist) {
+      bestDist = d;
+      nearest = item;
+    }
+  }
+  return nearest;
+}
+
+class Human {
+  constructor(x, y, role = "normal") {
+    this.x = x;
+    this.y = y;
+    this.hp = 100;
+    this.weapon = 1;
+    this.weaponType = "none"; // tipo de espada atual (madeira, ferro, ouro, etc.)
+    this.speed = 1.6;
+    this.role = role; // normal, builder, farmer, marketOwner, miner, gameDev
+    this.armorLevel = 0; // 0=sem, 1=ferro, 2=ouro, 3=diamante/rubi
+    this.targetFarm = null;
+    this.targetMine = null;
+  }
+
+  update() {
+    // coletar recurso -> ganha espada do minério
+    resources.forEach((r, i) => {
+      if (dist(this, r) < 15) {
+        const power = resourcePower[r.type] || 1;
+        // sempre que coleta, atualiza para a espada daquele minério
+        if (power >= this.weapon) {
+          this.weapon = power;
+          this.weaponType = r.type;
+        }
+        resources.splice(i, 1);
+      }
+    });
+
+    // arma -> nível de armadura visual
+    if (this.weapon >= resourcePower.ruby) this.armorLevel = 3;
+    else if (this.weapon >= resourcePower.diamond) this.armorLevel = 3;
+    else if (this.weapon >= resourcePower.gold) this.armorLevel = 2;
+    else if (this.weapon >= resourcePower.iron) this.armorLevel = 1;
+
+    // atacar monstro
+    monsters.forEach((m, i) => {
+      if (dist(this, m) < 20) {
+        m.hp -= this.weapon;
+        if (m.hp <= 0) monsters.splice(i, 1);
+      }
+    });
+
+    // chance pequena de virar fazendeiro se houver fazendas
+    if (this.role === "normal" && farms.length > 0 && Math.random() < 0.0005) {
+      this.role = "farmer";
+    }
+
+    if (this.role === "builder") {
+      this.updateBuilder();
+    } else if (this.role === "farmer") {
+      this.updateFarmer();
+    } else if (this.role === "marketOwner") {
+      this.updateMarketOwner();
+    } else if (this.role === "miner") {
+      this.updateMiner();
+    } else if (this.role === "gameDev") {
+      this.updateGameDev();
+    } else {
+      this.updateFighterGatherer();
+    }
+
+    // mantém dentro da tela
+    this.x = Math.max(5, Math.min(canvas.width - 5, this.x));
+    this.y = Math.max(5, Math.min(canvas.height - 5, this.y));
+  }
+
+  updateFighterGatherer() {
+    // IA de movimento:
+    const nearestResource = findNearest(this, resources);
+    const nearestMonster = findNearest(this, monsters);
+    const nearestRhino = findNearest(this, rhinos);
+
+    let dirX = 0;
+    let dirY = 0;
+
+    // fugir de rinocerontes próximos (prioridade alta)
+    if (nearestRhino && dist(this, nearestRhino) < 90) {
+      const dx = this.x - nearestRhino.x;
+      const dy = this.y - nearestRhino.y;
+      const len = Math.hypot(dx, dy) || 1;
+      dirX += (dx / len) * 1.6;
+      dirY += (dy / len) * 1.6;
+    }
+
+    // perseguir monstros quando possível
+    if (nearestMonster) {
+      const dx = nearestMonster.x - this.x;
+      const dy = nearestMonster.y - this.y;
+      const len = Math.hypot(dx, dy) || 1;
+      dirX += dx / len;
+      dirY += dy / len;
+    } else if (nearestResource) {
+      // senão, ir atrás de recurso
+      const dx = nearestResource.x - this.x;
+      const dy = nearestResource.y - this.y;
+      const len = Math.hypot(dx, dy) || 1;
+      dirX += dx / len;
+      dirY += dy / len;
+    }
+
+    // humanos compram comida: vão até fazenda se estiverem machucados
+    if (this.hp < 80 && farms.length > 0) {
+      const nearestFarm = findNearest(this, farms);
+      if (nearestFarm) {
+        const dx = nearestFarm.x - this.x;
+        const dy = nearestFarm.y - this.y;
+        const len = Math.hypot(dx, dy) || 1;
+        dirX += (dx / len) * 0.6;
+        dirY += (dy / len) * 0.6;
+
+        if (dist(this, nearestFarm) < 18 && nearestFarm.food > 1) {
+          // compra comida
+          nearestFarm.food -= 1;
+          this.hp = Math.min(100, this.hp + 10);
+        }
+      }
+    }
+
+    // ruído mais suave
+    dirX += rand(-0.15, 0.15);
+    dirY += rand(-0.15, 0.15);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * this.speed;
+    this.y += (dirY / len) * this.speed;
+  }
+
+  updateBuilder() {
+    // construtor melhora casas existentes e cria fazendas
+    let targetHouse = null;
+    let bestDist = Infinity;
+    for (const h of houses) {
+      if (h.level < 2) {
+        const d = dist(this, h);
+        if (d < bestDist) {
+          bestDist = d;
+          targetHouse = h;
+        }
+      }
+    }
+
+    let dirX = 0;
+    let dirY = 0;
+
+    if (targetHouse) {
+      const dx = targetHouse.x - this.x;
+      const dy = targetHouse.y - this.y;
+      const len = Math.hypot(dx, dy) || 1;
+      dirX = dx / len;
+      dirY = dy / len;
+
+      if (bestDist < 18) {
+        // evoluir casa
+        targetHouse.level = 2;
+        // ao evoluir casa, chance de aparecer um animal
+        spawnHouseAnimal(targetHouse.x, targetHouse.y);
+      }
+    } else {
+      // nenhuma casa para evoluir -> construir fazenda perto da casa mais próxima
+      const baseHouse = findNearest(this, houses);
+      if (baseHouse && farms.length < humans.length) {
+        if (dist(this, baseHouse) < 40) {
+          // tentar posicionar fazenda
+          const fx = baseHouse.x + rand(-50, 50);
+          const fy = baseHouse.y + rand(-50, 50);
+          if (
+            fx > 20 &&
+            fy > 20 &&
+            fx < canvas.width - 20 &&
+            fy < canvas.height - 20
+          ) {
+            farms.push(new Farm(fx, fy));
+          }
+        } else {
+          const dx = baseHouse.x - this.x;
+          const dy = baseHouse.y - this.y;
+          const len = Math.hypot(dx, dy) || 1;
+          dirX = dx / len;
+          dirY = dy / len;
+        }
+      }
+    }
+
+    dirX += rand(-0.15, 0.15);
+    dirY += rand(-0.15, 0.15);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * this.speed;
+    this.y += (dirY / len) * this.speed;
+  }
+
+  updateFarmer() {
+    // fazendeiro procura fazenda para trabalhar
+    if (!this.targetFarm || farms.indexOf(this.targetFarm) === -1) {
+      this.targetFarm = findNearest(this, farms);
+    }
+
+    let dirX = 0;
+    let dirY = 0;
+
+    if (this.targetFarm) {
+      const dx = this.targetFarm.x - this.x;
+      const dy = this.targetFarm.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+
+      if (d > 10) {
+        dirX = dx / d;
+        dirY = dy / d;
+      } else {
+        // plantando / cuidando
+        this.targetFarm.food = Math.min(
+          this.targetFarm.food + 0.03,
+          this.targetFarm.maxFood
+        );
+      }
+    }
+
+    dirX += rand(-0.1, 0.1);
+    dirY += rand(-0.1, 0.1);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * (this.speed * 0.8);
+    this.y += (dirY / len) * (this.speed * 0.8);
+  }
+
+  updateMiner() {
+    // se não existe mina ainda, comportamento parecido com guerreiro,
+    // mas com foco em ficar perto de GEFs para facilitar construção da mina
+    if (mines.length === 0) {
+      const nearestGef = findNearest(this, gefs);
+      let dirX = 0;
+      let dirY = 0;
+
+      if (nearestGef) {
+        const dx = nearestGef.x - this.x;
+        const dy = nearestGef.y - this.y;
+        const d = Math.hypot(dx, dy) || 1;
+        dirX = dx / d;
+        dirY = dy / d;
+      }
+
+      dirX += rand(-0.15, 0.15);
+      dirY += rand(-0.15, 0.15);
+
+      const len = Math.hypot(dirX, dirY) || 1;
+      this.x += (dirX / len) * (this.speed * 0.9);
+      this.y += (dirY / len) * (this.speed * 0.9);
+      return;
+    }
+
+    // com mina criada, escavador vai até ela para trabalhar
+    if (!this.targetMine || mines.indexOf(this.targetMine) === -1) {
+      this.targetMine = mines[0];
+    }
+
+    let dirX = 0;
+    let dirY = 0;
+
+    if (this.targetMine) {
+      const dx = this.targetMine.x - this.x;
+      const dy = this.targetMine.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+
+      if (d > 14) {
+        dirX = dx / d;
+        dirY = dy / d;
+      } else {
+        // "trabalhando" dentro da mina: fica andando em volta devagar
+        dirX += rand(-0.05, 0.05);
+        dirY += rand(-0.05, 0.05);
+      }
+    }
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * (this.speed * 0.8);
+    this.y += (dirY / len) * (this.speed * 0.8);
+  }
+
+  updateMarketOwner() {
+    // donos de mercado se movem mais perto dos mercados, se existirem,
+    // senão andam perto das casas (como se estivessem procurando lugar para vender)
+    let dirX = 0;
+    let dirY = 0;
+
+    let target = null;
+    if (markets.length > 0) {
+      target = findNearest(this, markets);
+    } else if (houses.length > 0) {
+      target = findNearest(this, houses);
+    }
+
+    if (target) {
+      const dx = target.x - this.x;
+      const dy = target.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d > 15) {
+        dirX = dx / d;
+        dirY = dy / d;
+      }
+    }
+
+    dirX += rand(-0.15, 0.15);
+    dirY += rand(-0.15, 0.15);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * (this.speed * 0.9);
+    this.y += (dirY / len) * (this.speed * 0.9);
+  }
+
+  updateGameDev() {
+    // Criador de Jogos gosta de ficar perto de lojas de jogos ou GEFs
+    let dirX = 0;
+    let dirY = 0;
+
+    let target = null;
+    if (gameShops.length > 0) {
+      target = findNearest(this, gameShops);
+    } else if (gefs.length > 0) {
+      target = findNearest(this, gefs);
+    } else if (houses.length > 0) {
+      target = findNearest(this, houses);
+    }
+
+    if (target) {
+      const dx = target.x - this.x;
+      const dy = target.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d > 20) {
+        dirX = dx / d;
+        dirY = dy / d;
+      }
+    }
+
+    dirX += rand(-0.1, 0.1);
+    dirY += rand(-0.1, 0.1);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * (this.speed * 0.85);
+    this.y += (dirY / len) * (this.speed * 0.85);
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // sombra mais detalhada (liga leve para indicar direção de luz)
+    ctx.fillStyle = "rgba(0,0,0,0.32)";
+    ctx.beginPath();
+    ctx.ellipse(0, 8, 9, 4.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // escolha de cor base por função (mantém paleta mas com tons mais ricos)
+    let base = "#2c6df2"; // guerreiro normal
+    if (this.role === "builder") base = "#d9a83a";
+    if (this.role === "farmer") base = "#4aa04a";
+    if (this.role === "marketOwner") base = "#b55bde";
+    if (this.role === "gameDev") base = "#ff8a3c";
+    if (this.role === "miner") base = "#f0c94a";
+
+    // camisa com camada externa e gola/forro
+    const shirtGrad = ctx.createLinearGradient(0, -8, 0, 8);
+    shirtGrad.addColorStop(0, lightenColor(base, 0.28));
+    shirtGrad.addColorStop(0.5, base);
+    shirtGrad.addColorStop(1, darkenColor(base, 0.16));
+    ctx.fillStyle = shirtGrad;
+    ctx.beginPath();
+    ctx.roundRect(-8, -8, 16, 14, 4);
+    ctx.fill();
+
+    // forro/peito com leve sobreposição para dar volume
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.beginPath();
+    ctx.roundRect(-6, -6, 12, 8, 3);
+    ctx.fill();
+
+    // cinto/barriga com textura simples (faz a silhueta mais rica)
+    ctx.fillStyle = darkenColor(base, 0.35);
+    ctx.fillRect(-6, 0, 12, 4);
+    ctx.strokeStyle = darkenColor(base, 0.5);
+    ctx.lineWidth = 0.8;
+    ctx.strokeRect(-6, 0, 12, 4);
+
+    // legs/boots (pernas e botas) — pernas sombreadas e botas com detalhe metálico
+    ctx.fillStyle = "#2b2b2b";
+    ctx.beginPath();
+    ctx.roundRect(-6, 4, 5, 8, 2);
+    ctx.roundRect(1, 4, 5, 8, 2);
+    ctx.fill();
+
+    // botas
+    ctx.fillStyle = "#4a3a2a";
+    ctx.beginPath();
+    ctx.roundRect(-7, 11, 8, 5, 2);
+    ctx.roundRect(0, 11, 8, 5, 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.roundRect(-7, 11, 8, 5, 2);
+    ctx.roundRect(0, 11, 8, 5, 2);
+    ctx.stroke();
+
+    // cabeça com leve gradiente de pele e volume
+    const headGrad = ctx.createLinearGradient(0, -16, 0, -6);
+    headGrad.addColorStop(0, "#fff4e4");
+    headGrad.addColorStop(1, "#e7c99b");
+    ctx.fillStyle = headGrad;
+    ctx.beginPath();
+    ctx.arc(0, -11, 5.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // olhos com sobrancelhas e brilho
+    ctx.fillStyle = "#000";
+    ctx.beginPath();
+    ctx.arc(-1.6, -12.2, 0.75, 0, Math.PI * 2);
+    ctx.arc(1.6, -12.2, 0.75, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(-3.2, -13.4);
+    ctx.quadraticCurveTo(-1.6, -13.8, -0.4, -13.4);
+    ctx.moveTo(3.2, -13.4);
+    ctx.quadraticCurveTo(1.6, -13.8, 0.4, -13.4);
+    ctx.stroke();
+
+    // nariz sutil e boca expressiva
+    ctx.strokeStyle = "rgba(60,40,30,0.7)";
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(0, -11.2);
+    ctx.lineTo(0, -9.8);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-2.5, -9.2);
+    ctx.quadraticCurveTo(0, -8.6, 2.5, -9.2);
+    ctx.stroke();
+
+    // bochechas suaves
+    ctx.fillStyle = "rgba(255,120,120,0.14)";
+    ctx.beginPath();
+    ctx.arc(-2.2, -10.4, 0.9, 0, Math.PI * 2);
+    ctx.arc(2.2, -10.4, 0.9, 0, Math.PI * 2);
+    ctx.fill();
+
+    // cabelo simples com variações por profissão (mais estilos)
+    ctx.fillStyle = "#2b1d10";
+    if (this.role === "gameDev") ctx.fillStyle = "#1f1f1f";
+    if (this.role === "farmer") ctx.fillStyle = "#4a351f";
+    if (this.role === "miner") ctx.fillStyle = "#3a2b18";
+    ctx.beginPath();
+    ctx.moveTo(-5, -14);
+    ctx.quadraticCurveTo(0, -18, 5, -14);
+    ctx.lineTo(5, -11);
+    ctx.quadraticCurveTo(0, -16, -5, -11);
+    ctx.closePath();
+    ctx.fill();
+
+    // acessórios e detalhes por função (mais definidos)
+    if (this.role === "builder") {
+      // martelo detalhado com cabo texturizado e cabeça metálica
+      ctx.strokeStyle = "#5b3b18";
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(6, 0);
+      ctx.lineTo(11, 4);
+      ctx.stroke();
+      ctx.fillStyle = "#d0d4dd";
+      ctx.beginPath();
+      ctx.roundRect(9, 2, 6, 3, 1.2);
+      ctx.fill();
+      // bolso de ferramentas no cinto
+      ctx.fillStyle = "#6b4f2c";
+      ctx.fillRect(-5.5, 1, 3.5, 3.5);
+    } else if (this.role === "farmer") {
+      // chapéu de palha com textura e alça
+      ctx.fillStyle = "#e6c875";
+      ctx.beginPath();
+      ctx.ellipse(0, -13.6, 6.2, 2.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(0,0,0,0.06)";
+      ctx.fillRect(-4.5, -16, 9, 1.6);
+      // enxada mais trabalhada
+      ctx.strokeStyle = "#6b4f2c";
+      ctx.lineWidth = 2.1;
+      ctx.beginPath();
+      ctx.moveTo(-6, -1);
+      ctx.lineTo(-11, 4);
+      ctx.stroke();
+    } else if (this.role === "marketOwner") {
+      // bolsa com moedas com brilho
+      ctx.fillStyle = "#f4c542";
+      ctx.beginPath();
+      ctx.arc(9, -1, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.45)";
+      ctx.beginPath();
+      ctx.arc(8, -2, 1.1, 0, Math.PI * 2);
+      ctx.fill();
+      // avental com textura
+      ctx.fillStyle = "rgba(255,255,255,0.96)";
+      ctx.fillRect(-5, -3, 10, 9);
+      ctx.strokeStyle = "rgba(180,160,160,0.6)";
+      ctx.strokeRect(-4, -2, 8, 6);
+    } else if (this.role === "gameDev") {
+      // fone com espuma e tablet com ícones
+      ctx.strokeStyle = "#ffcc80";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(0, -11, 6.1, Math.PI * 0.18, Math.PI * 0.82);
+      ctx.stroke();
+      ctx.fillStyle = "#222";
+      ctx.beginPath();
+      ctx.roundRect(6, -4, 8, 6, 2);
+      ctx.fill();
+      ctx.fillStyle = "#4caf50";
+      ctx.beginPath();
+      ctx.arc(8.5, -0.5, 0.8, 0, Math.PI * 2);
+      ctx.arc(11, -0.5, 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (this.role === "miner") {
+      // capacete com luz e reflexo
+      ctx.fillStyle = "#f4d14a";
+      ctx.beginPath();
+      ctx.roundRect(-6, -16, 12, 6, 3);
+      ctx.fill();
+      ctx.fillStyle = "#fff6c8";
+      ctx.beginPath();
+      ctx.arc(0, -13, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // guerreiro normal: espada com lâmina mais texturizada e escudo pequeno
+      if (this.weapon > 1 && this.weaponType !== "none") {
+        ctx.strokeStyle = "#5a3a19";
+        ctx.lineWidth = 3.4;
+        ctx.beginPath();
+        ctx.moveTo(6, 2);
+        ctx.lineTo(6, -3.5);
+        ctx.stroke();
+
+        let bladeColor = "#dddddd";
+        if (this.weaponType === "wood") bladeColor = "#8b5a2b";
+        else if (this.weaponType === "stone") bladeColor = "#b0b0b0";
+        else if (this.weaponType === "iron") bladeColor = "#b7bcc5";
+        else if (this.weaponType === "gold") bladeColor = "#ffd94a";
+        else if (this.weaponType === "diamond") bladeColor = "#88f0ff";
+        else if (this.weaponType === "ruby") bladeColor = "#e0253c";
+        else if (this.weaponType === "copper") bladeColor = "#c46b3a";
+        else if (this.weaponType === "lapis") bladeColor = "#2354b8";
+        else if (this.weaponType === "sapphire") bladeColor = "#1e7be5";
+        else if (this.weaponType === "netherite") bladeColor = "#2d2625";
+        else if (this.weaponType === "amandita") bladeColor = "#ff66c4";
+
+        const bladeGrad = ctx.createLinearGradient(8, -10, 14, -3);
+        bladeGrad.addColorStop(0, lightenColor(bladeColor, 0.22));
+        bladeGrad.addColorStop(1, darkenColor(bladeColor, 0.18));
+
+        withGlow(lightenColor(bladeColor, 0.45), 10, () => {
+          ctx.strokeStyle = bladeGrad;
+          ctx.lineWidth = 3.2;
+          ctx.beginPath();
+          ctx.moveTo(8, -3);
+          ctx.lineTo(14, -10);
+          ctx.stroke();
+        });
+
+        ctx.strokeStyle = bladeGrad;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(8, -3);
+        ctx.lineTo(14, -10);
+        ctx.stroke();
+      }
+
+      // pequeno escudo nas costas para diversidade
+      ctx.fillStyle = "rgba(80,80,80,0.22)";
+      ctx.beginPath();
+      ctx.roundRect(-10, -2, 6, 10, 3);
+      ctx.fill();
+    }
+
+    // insígnia pequena indicando nível de armadura/força (rodapé do peito)
+    if (this.armorLevel > 0) {
+      const acol = this.armorLevel === 1 ? "#b7bcc5" : this.armorLevel === 2 ? "#ffd94a" : "#88f0ff";
+      ctx.fillStyle = acol;
+      ctx.beginPath();
+      ctx.arc(-2.8, -1, 1.1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // legenda da profissão (mais discreta)
+    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    ctx.font = "9px Arial";
+    ctx.textAlign = "center";
+    let label = "";
+    if (this.role === "builder") label = "Construtor";
+    else if (this.role === "farmer") label = "Fazendeiro";
+    else if (this.role === "marketOwner") label = "Mercado";
+    else if (this.role === "miner") label = "Escavador";
+    else if (this.role === "gameDev") label = "Dev Jogos";
+    else label = "Guerreiro";
+    ctx.fillText(label, 0, -22);
+
+    ctx.restore();
+  }
+}
+
+class Monster {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.hp = 80;
+    this.speed = 1.1;
+  }
+
+  update() {
+    // atacar humanos em alcance
+    humans.forEach((h, i) => {
+      if (dist(this, h) < 20) {
+        h.hp -= 1.5;
+        if (h.hp <= 0) humans.splice(i, 1);
+      }
+    });
+
+    // IA: perseguir o humano mais próximo
+    const nearestHuman = findNearest(this, humans);
+
+    let dirX = 0;
+    let dirY = 0;
+
+    if (nearestHuman) {
+      const dx = nearestHuman.x - this.x;
+      const dy = nearestHuman.y - this.y;
+      const len = Math.hypot(dx, dy) || 1;
+      dirX = dx / len;
+      dirY = dy / len;
+    }
+
+    // leve ruído para não ficar totalmente linear
+    dirX += rand(-0.15, 0.15);
+    dirY += rand(-0.15, 0.15);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * this.speed;
+    this.y += (dirY / len) * this.speed;
+
+    // mantém dentro da tela
+    this.x = Math.max(6, Math.min(canvas.width - 6, this.x));
+    this.y = Math.max(6, Math.min(canvas.height - 6, this.y));
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // soft shadow
+    ctx.fillStyle = "rgba(0,0,0,0.32)";
+    ctx.beginPath();
+    ctx.ellipse(0, 10, 12, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // body gradient - layered to create depth and skin texture
+    const baseColor = "#b02020";
+    const bodyGrad = ctx.createLinearGradient(0, -12, 0, 12);
+    bodyGrad.addColorStop(0, lightenColor(baseColor, 0.18));
+    bodyGrad.addColorStop(0.5, baseColor);
+    bodyGrad.addColorStop(1, darkenColor(baseColor, 0.2));
+
+    // outer shape with slight squash for a chunky monster
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.roundRect(-12, -14, 24, 28, 6);
+    ctx.fill();
+
+    // subtle skin mottling using translucent strokes
+    ctx.globalAlpha = 0.12;
+    ctx.strokeStyle = "rgba(0,0,0,0.25)";
+    for (let i = 0; i < 6; i++) {
+      const ox = rand(-8, 8);
+      const oy = rand(-8, 6);
+      ctx.beginPath();
+      ctx.ellipse(ox, oy, 6 + Math.random() * 6, 3 + Math.random() * 4, rand(-0.6, 0.6), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // stronger rim highlight to sell volume
+    ctx.strokeStyle = lightenColor(baseColor, 0.36);
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.roundRect(-12, -14, 24, 28, 6);
+    ctx.stroke();
+
+    // scaled horns with small gradient and cracks
+    const hornGrad = ctx.createLinearGradient(-9, -20, -5, -10);
+    hornGrad.addColorStop(0, "#fff8f0");
+    hornGrad.addColorStop(1, "#ddd2c3");
+    ctx.fillStyle = hornGrad;
+    ctx.beginPath();
+    ctx.moveTo(-6, -12);
+    ctx.lineTo(-14, -26);
+    ctx.lineTo(-4, -12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.18)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(-10, -18);
+    ctx.lineTo(-8, -20);
+    ctx.stroke();
+
+    ctx.fillStyle = hornGrad;
+    ctx.beginPath();
+    ctx.moveTo(6, -12);
+    ctx.lineTo(14, -26);
+    ctx.lineTo(4, -12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(10, -18);
+    ctx.lineTo(8, -20);
+    ctx.stroke();
+
+    // dorsal spikes for a more menacing silhouette
+    ctx.fillStyle = darkenColor(baseColor, 0.14);
+    for (let i = -8; i <= 8; i += 6) {
+      ctx.beginPath();
+      ctx.moveTo(i, -10);
+      ctx.lineTo(i - 4, -20);
+      ctx.lineTo(i + 4, -10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.12)";
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+
+    // eyes with glow
+    const eyeGlow = "rgba(255,200,80,0.9)";
+    withGlow(eyeGlow, 10, () => {
+      ctx.fillStyle = eyeGlow;
+      ctx.beginPath();
+      ctx.ellipse(-4, -6, 3.2, 4.2, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(4, -6, 3.2, 4.2, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.fillStyle = "#0a0a0a";
+    ctx.beginPath();
+    ctx.ellipse(-4, -6, 1.2, 1.6, 0.2, 0, Math.PI * 2);
+    ctx.ellipse(4, -6, 1.2, 1.6, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // snarling mouth with jagged teeth and inner darker lip
+    ctx.fillStyle = "#2e0b0b";
+    ctx.beginPath();
+    ctx.roundRect(-9, -1, 18, 10, 4);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.4)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // teeth
+    ctx.fillStyle = "#fff8e8";
+    for (let i = -6; i <= 6; i += 4) {
+      ctx.beginPath();
+      ctx.moveTo(i, 6);
+      ctx.lineTo(i + 2, 2);
+      ctx.lineTo(i + 4, 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.12)";
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
+    }
+
+    // cheek scars / scratches for character
+    ctx.strokeStyle = "rgba(0,0,0,0.14)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-8, -2);
+    ctx.lineTo(-4, 1);
+    ctx.moveTo(-6, -1);
+    ctx.lineTo(-2, 2);
+    ctx.stroke();
+
+    // claws on lower body for presence
+    ctx.fillStyle = darkenColor(baseColor, 0.34);
+    for (let cx = -8; cx <= 8; cx += 8) {
+      ctx.beginPath();
+      ctx.roundRect(cx - 3, 14, 6, 6, 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.12)";
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
+
+    // subtle contour edge to ground contact
+    ctx.strokeStyle = "rgba(0,0,0,0.28)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-10, 12);
+    ctx.quadraticCurveTo(0, 16, 10, 12);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+class Rhino {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.hp = 220; // bem mais forte que o monstro
+    this.speed = 1.8;
+    this.state = "hunt"; // hunt, charge, retreat, wander
+    this.target = null;
+    this.chargeCooldown = 0;
+    this.retreatTimer = 0;
+  }
+
+  update() {
+    // atacar humanos próximos
+    for (let i = humans.length - 1; i >= 0; i--) {
+      const h = humans[i];
+      const d = dist(this, h);
+      if (d < 26) {
+        // dano alto
+        h.hp -= 3.5;
+        if (h.hp <= 0) humans.splice(i, 1);
+      }
+    }
+
+    // reduz cooldowns
+    if (this.chargeCooldown > 0) this.chargeCooldown--;
+    if (this.retreatTimer > 0) this.retreatTimer--;
+
+    // escolher alvo humano mais próximo
+    if (!this.target || humans.indexOf(this.target) === -1) {
+      this.target = findNearest(this, humans);
+    }
+
+    // contar quantos humanos estão perto do rinoceronte
+    let nearbyHumans = 0;
+    for (const h of humans) {
+      if (dist(this, h) < 80) nearbyHumans++;
+    }
+
+    // IA de alto nível:
+    // - se há muitos humanos na volta, ele recua
+    // - se tem um alvo isolado, ele entra em "charge"
+    // - senão, caça normalmente
+    if (nearbyHumans >= 4 && this.retreatTimer === 0) {
+      this.state = "retreat";
+      this.retreatTimer = 120;
+    } else if (this.target && nearbyHumans <= 2 && this.chargeCooldown === 0) {
+      this.state = "charge";
+      this.chargeCooldown = 180;
+    } else if (!this.target) {
+      this.state = "wander";
+    } else if (this.state !== "retreat") {
+      this.state = "hunt";
+    }
+
+    let dirX = 0;
+    let dirY = 0;
+    let speed = this.speed;
+
+    if (this.state === "charge" && this.target) {
+      // investida rápida em linha quase reta
+      const dx = this.target.x - this.x;
+      const dy = this.target.y - this.y;
+      const len = Math.hypot(dx, dy) || 1;
+      dirX = dx / len;
+      dirY = dy / len;
+      speed *= 2.4;
+    } else if (this.state === "hunt" && this.target) {
+      // caça "esperta": chega um pouco ao lado do alvo
+      const dx = this.target.x - this.x;
+      const dy = this.target.y - this.y;
+      const len = Math.hypot(dx, dy) || 1;
+      dirX = dx / len;
+      dirY = dy / len;
+
+      // leve desvio lateral para não ir sempre reto
+      const side = dx * 0.0 + dy * 0.0; // placeholder, já temos ruído abaixo
+    } else if (this.state === "retreat") {
+      // corre para longe do centro dos humanos próximos
+      let centerX = 0;
+      let centerY = 0;
+      let count = 0;
+      for (const h of humans) {
+        if (dist(this, h) < 100) {
+          centerX += h.x;
+          centerY += h.y;
+          count++;
+        }
+      }
+      if (count > 0) {
+        centerX /= count;
+        centerY /= count;
+        const dx = this.x - centerX;
+        const dy = this.y - centerY;
+        const len = Math.hypot(dx, dy) || 1;
+        dirX = dx / len;
+        dirY = dy / len;
+        speed *= 1.6;
+      } else {
+        this.state = "wander";
+      }
+    } else {
+      // wander
+      dirX = rand(-1, 1);
+      dirY = rand(-1, 1);
+    }
+
+    // ruído pequeno para o movimento
+    dirX += rand(-0.1, 0.1);
+    dirY += rand(-0.1, 0.1);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * speed;
+    this.y += (dirY / len) * speed;
+
+    // mantém dentro da tela
+    this.x = Math.max(12, Math.min(canvas.width - 12, this.x));
+    this.y = Math.max(12, Math.min(canvas.height - 12, this.y));
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // stronger ground shadow with soft feather
+    const shadowGrad = ctx.createRadialGradient(0, 12, 6, 0, 18, 36);
+    shadowGrad.addColorStop(0, "rgba(0,0,0,0.35)");
+    shadowGrad.addColorStop(1, "rgba(0,0,0,0.06)");
+    ctx.fillStyle = shadowGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, 14, 16, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // main body with layered gradients to suggest mass and leathery skin
+    const bodyGrad = ctx.createLinearGradient(0, -12, 0, 18);
+    bodyGrad.addColorStop(0, "#7f7772");
+    bodyGrad.addColorStop(0.5, "#6d6360");
+    bodyGrad.addColorStop(1, "#4e4744");
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    // shape with a subtle belly curve
+    ctx.moveTo(-16, 6);
+    ctx.quadraticCurveTo(-14, -10, -12, -12);
+    ctx.lineTo(12, -12);
+    ctx.quadraticCurveTo(14, -10, 16, 6);
+    ctx.quadraticCurveTo(6, 14, -6, 14);
+    ctx.closePath();
+    ctx.fill();
+
+    // body contour and heavy edge for silhouette
+    ctx.strokeStyle = "rgba(35,30,28,0.95)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(-16, 6);
+    ctx.quadraticCurveTo(-14, -10, -12, -12);
+    ctx.lineTo(12, -12);
+    ctx.quadraticCurveTo(14, -10, 16, 6);
+    ctx.quadraticCurveTo(6, 14, -6, 14);
+    ctx.closePath();
+    ctx.stroke();
+
+    // layered skin folds and highlights
+    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.lineWidth = 1;
+    for (let i = -8; i <= 8; i += 4) {
+      ctx.beginPath();
+      ctx.moveTo(-10 + i * 0.1, -2 + (i * 0.12));
+      ctx.quadraticCurveTo(0, 2 + (i * 0.06), 10 - i * 0.1, 6 + (i * 0.08));
+      ctx.stroke();
+    }
+
+    // rough skin texture: subtle speckles and scuffs
+    ctx.fillStyle = "rgba(0,0,0,0.06)";
+    for (let i = 0; i < 28; i++) {
+      const rx = rand(-14, 14);
+      const ry = rand(-6, 8);
+      ctx.beginPath();
+      ctx.ellipse(rx, ry, rand(0.5, 1.8), rand(0.4, 1.2), rand(-0.6, 0.6), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // head with stronger form and neck plates
+    const headGrad = ctx.createLinearGradient(0, -24, 0, -6);
+    headGrad.addColorStop(0, "#8a7f79");
+    headGrad.addColorStop(1, "#645e5a");
+    ctx.fillStyle = headGrad;
+    ctx.beginPath();
+    ctx.roundRect(-12, -26, 24, 18, 6);
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(35,30,28,0.95)";
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.roundRect(-12, -26, 24, 18, 6);
+    ctx.stroke();
+
+    // pronounced neck fold
+    ctx.strokeStyle = "rgba(0,0,0,0.28)";
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(-8, -8);
+    ctx.quadraticCurveTo(0, -3, 8, -8);
+    ctx.stroke();
+
+    // horn: textured, layered gradient with cracks and specular
+    const hornGrad = ctx.createLinearGradient(2, -30, 8, -12);
+    hornGrad.addColorStop(0, "#fff8f0");
+    hornGrad.addColorStop(0.45, "#e6dbc8");
+    hornGrad.addColorStop(1, "#bdb2a4");
+
+    // big horn base shape
+    ctx.fillStyle = hornGrad;
+    ctx.beginPath();
+    ctx.moveTo(0, -22);
+    ctx.lineTo(6, -34);
+    ctx.lineTo(2, -22);
+    ctx.closePath();
+    ctx.fill();
+
+    // horn cracks / striations
+    ctx.strokeStyle = "rgba(80,70,60,0.45)";
+    ctx.lineWidth = 0.9;
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      const sx = 1 + i * 1.2;
+      ctx.moveTo(sx, -25 + i * 2);
+      ctx.quadraticCurveTo(4 + i * 0.6, -28 + i * 1.5, 2 + i * 0.3, -30 + i * 1.2);
+      ctx.stroke();
+    }
+
+    // specular sheen on horn tip
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(3.2, -25);
+    ctx.lineTo(5.5, -31);
+    ctx.stroke();
+
+    // smaller horn with its own detail
+    ctx.fillStyle = "#e6ded4";
+    ctx.beginPath();
+    ctx.moveTo(-4, -21);
+    ctx.lineTo(-1, -28);
+    ctx.lineTo(-3, -20);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(70,60,55,0.6)";
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+
+    // ears with inner shading
+    ctx.fillStyle = "#5a524d";
+    ctx.beginPath();
+    ctx.roundRect(-11, -25, 4, 6, 2);
+    ctx.roundRect(7, -25, 4, 6, 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.18)";
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    // expressive eyes with small highlight and darker lid
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.ellipse(-4, -16, 2.2, 2.6, 0.1, 0, Math.PI * 2);
+    ctx.ellipse(4, -16, 2.2, 2.6, -0.1, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#1a1110";
+    ctx.beginPath();
+    ctx.arc(-4, -15.6, 1, 0, Math.PI * 2);
+    ctx.arc(4, -15.6, 1, 0, Math.PI * 2);
+    ctx.fill();
+
+    // subtle eyelids / brows for mood
+    ctx.strokeStyle = "rgba(0,0,0,0.32)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-6, -17.5);
+    ctx.quadraticCurveTo(-4, -18.6, -2, -17.6);
+    ctx.moveTo(6, -17.5);
+    ctx.quadraticCurveTo(4, -18.6, 2, -17.6);
+    ctx.stroke();
+
+    // pronounced scar and battle marks on face
+    ctx.strokeStyle = "rgba(0,0,0,0.38)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-9, -14);
+    ctx.lineTo(-5, -11);
+    ctx.lineTo(-3, -12);
+    ctx.stroke();
+
+    // strong legs with joint shading and toe definition
+    ctx.fillStyle = "#5a524d";
+    // front left
+    ctx.beginPath();
+    ctx.roundRect(-14, 6, 7, 10, 3);
+    ctx.fill();
+    // front right
+    ctx.beginPath();
+    ctx.roundRect(-4, 6, 7, 10, 3);
+    ctx.fill();
+    // back left
+    ctx.beginPath();
+    ctx.roundRect(6, 6, 7, 10, 3);
+    ctx.fill();
+    // back right
+    ctx.beginPath();
+    ctx.roundRect(13, 6, 7, 10, 3);
+    ctx.fill();
+
+    // toe accents
+    ctx.strokeStyle = "rgba(0,0,0,0.2)";
+    ctx.lineWidth = 0.9;
+    for (const tx of [-11, -3, 8, 15]) {
+      ctx.beginPath();
+      ctx.moveTo(tx - 2, 14);
+      ctx.lineTo(tx + 4, 14);
+      ctx.stroke();
+    }
+
+    // subtle reflective edge along back to sell form
+    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-12, -6);
+    ctx.quadraticCurveTo(0, -12, 12, -6);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+class Alien {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.hp = 260;
+    this.speed = 2.1;
+    this.state = "observe"; // observe, hunt, kite, flank, retreat, mine
+    this.target = null;
+    this.retargetCooldown = 0;
+
+    // armas e armaduras próprias, baseadas em minérios
+    this.weapon = 2.4;
+    this.weaponType = "none";
+    this.armorLevel = 0; // 0=sem, 1=leve, 2=média, 3=pesada
+
+    // profissão do alien: alguns são mineradores especializados
+    this.role = Math.random() < 0.6 ? "miner" : "guardian";
+  }
+
+  update() {
+    // IA de movimento dos Aliens: eles analisam ameaças, coletam minérios e se reposicionam pelo mapa
+    // Aliens coletam minérios para melhorar armas e armaduras
+    resources.forEach((r, i) => {
+      if (dist(this, r) < 15) {
+        const power = resourcePower[r.type] || 1;
+        if (power >= this.weapon) {
+          this.weapon = power;
+          this.weaponType = r.type;
+        }
+        resources.splice(i, 1);
+      }
+    });
+
+    // definir nível de armadura baseado no minério que está usando
+    if (this.weapon >= (resourcePower.ruby || 10)) this.armorLevel = 3;
+    else if (this.weapon >= (resourcePower.diamond || 8)) this.armorLevel = 3;
+    else if (this.weapon >= (resourcePower.gold || 5)) this.armorLevel = 2;
+    else if (this.weapon >= (resourcePower.iron || 4)) this.armorLevel = 1;
+    else this.armorLevel = 0;
+
+    // alvo de recurso mais próximo (para mineradores)
+    const nearestResource = findNearest(this, resources);
+
+    // dano em curto alcance APENAS contra monstros e rinocerontes (neutros com humanos/GEFs)
+    const combatTargets = [...monsters, ...rhinos];
+    for (let i = combatTargets.length - 1; i >= 0; i--) {
+      const t = combatTargets[i];
+      if (dist(this, t) < 24) {
+        t.hp -= this.weapon;
+        if (t.hp <= 0) {
+          if (t instanceof Monster) {
+            const idx = monsters.indexOf(t);
+            if (idx !== -1) monsters.splice(idx, 1);
+          } else if (t instanceof Rhino) {
+            const idx = rhinos.indexOf(t);
+            if (idx !== -1) rhinos.splice(idx, 1);
+          }
+        }
+      }
+    }
+
+    // escolher novo alvo de forma "inteligente" periodicamente
+    if (!this.target || this.retargetCooldown <= 0 || this._isTargetDead(this.target)) {
+      // aliens são neutros: só escolhem alvos que são monstros ou rinocerontes
+      this.target = this.chooseBestTarget();
+      this.retargetCooldown = 60;
+    } else {
+      this.retargetCooldown--;
+    }
+
+    // contar vizinhança para decidir estado
+    const nearbyHumans = humans.filter((h) => dist(this, h) < 110).length;
+    const nearbyRhinos = rhinos.filter((r) => dist(this, r) < 120).length;
+
+    if (this.hp < 80 || nearbyHumans + nearbyRhinos >= 6) {
+      this.state = "retreat";
+    } else if (this.role === "miner" && nearestResource && !this.target) {
+      // mineradores priorizam ir minerar quando não há combate importante
+      this.state = "mine";
+    } else if (this.target && nearbyRhinos > 0) {
+      this.state = "kite";
+    } else if (this.target && nearbyHumans >= 3) {
+      this.state = "flank";
+    } else if (this.target) {
+      this.state = "hunt";
+    } else if (this.role === "miner" && nearestResource) {
+      this.state = "mine";
+    } else {
+      this.state = "observe";
+    }
+
+    let dirX = 0;
+    let dirY = 0;
+    let speed = this.speed;
+
+    if (this.state === "hunt" && this.target) {
+      const dx = this.target.x - this.x;
+      const dy = this.target.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      dirX += dx / d;
+      dirY += dy / d;
+    } else if (this.state === "mine" && nearestResource) {
+      // movimento focado em ir até o minério mais próximo
+      const dx = nearestResource.x - this.x;
+      const dy = nearestResource.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      dirX += dx / d;
+      dirY += dy / d;
+      speed *= 1.05;
+    } else if (this.state === "kite" && this.target) {
+      // mantém distância média do alvo perigoso, atacando de longe
+      const dx = this.target.x - this.x;
+      const dy = this.target.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const desired = 90;
+      if (d < desired) {
+        dirX -= dx / d;
+        dirY -= dy / d;
+      } else if (d > desired + 30) {
+        dirX += dx / d;
+        dirY += dy / d;
+      }
+      speed *= 1.1;
+    } else if (this.state === "flank" && this.target) {
+      // em vez de ir direto, vai para um lado do alvo
+      const dx = this.target.x - this.x;
+      const dy = this.target.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const nx = dx / d;
+      const ny = dy / d;
+      // vetor lateral
+      const side = Math.random() < 0.5 ? 1 : -1;
+      const lx = -ny * side;
+      const ly = nx * side;
+      dirX += nx * 0.4 + lx * 0.8;
+      dirY += ny * 0.4 + ly * 0.8;
+      speed *= 1.3;
+    } else if (this.state === "retreat") {
+      // foge do centro dos inimigos próximos
+      let cx = 0;
+      let cy = 0;
+      let count = 0;
+      const threats = [...humans, ...rhinos, ...monsters];
+      for (const t of threats) {
+        if (dist(this, t) < 150) {
+          cx += t.x;
+          cy += t.y;
+          count++;
+        }
+      }
+      if (count > 0) {
+        cx /= count;
+        cy /= count;
+        const dx = this.x - cx;
+        const dy = this.y - cy;
+        const d = Math.hypot(dx, dy) || 1;
+        dirX += dx / d;
+        dirY += dy / d;
+        speed *= 1.4;
+      }
+    } else {
+      // observe: se aproxima vagarosamente do maior "aglomerado" de unidades
+      let cx = 0;
+      let cy = 0;
+      let count = 0;
+      const crowd = [...humans, ...gefs, ...monsters, ...rhinos];
+      for (const t of crowd) {
+        cx += t.x;
+        cy += t.y;
+        count++;
+      }
+      if (count > 0) {
+        cx /= count;
+        cy /= count;
+        const dx = cx - this.x;
+        const dy = cy - this.y;
+        const d = Math.hypot(dx, dy) || 1;
+        dirX += dx / d;
+        dirY += dy / d;
+        speed *= 0.9;
+      }
+      // mesmo observando, mineradores ainda têm leve tendência a andar em direção a minérios
+      if (this.role === "miner" && nearestResource) {
+        const dxR = nearestResource.x - this.x;
+        const dyR = nearestResource.y - this.y;
+        const dR = Math.hypot(dxR, dyR) || 1;
+        dirX += (dxR / dR) * 0.5;
+        dirY += (dyR / dR) * 0.5;
+      }
+    }
+
+    // ruído mínimo para não ficar robótico
+    dirX += rand(-0.08, 0.08);
+    dirY += rand(-0.08, 0.08);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * speed;
+    this.y += (dirY / len) * speed;
+
+    // limites de tela
+    this.x = Math.max(12, Math.min(canvas.width - 12, this.x));
+    this.y = Math.max(12, Math.min(canvas.height - 12, this.y));
+  }
+
+  _isTargetDead(t) {
+    if (!t) return true;
+    return t.hp <= 0;
+  }
+
+  chooseBestTarget() {
+    // neutro: não mira em humanos nem em GEFs, só em monstros e rinocerontes
+    const scored = [];
+    const pushTargets = (list, baseScore) => {
+      for (const t of list) {
+        const d = dist(this, t);
+        const score = baseScore - d * 0.1; // quanto mais perto, melhor
+        scored.push({ t, score });
+      }
+    };
+    pushTargets(rhinos, 30);
+    pushTargets(monsters, 25);
+
+    if (!scored.length) return null;
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0].t;
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // profession label
+    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    ctx.font = "10px Arial";
+    ctx.textAlign = "center";
+    const label = this.role === "miner" ? "Minerador" : "Alien";
+    ctx.fillText(label, 0, -30);
+
+    // soft hovering shadow
+    ctx.fillStyle = "rgba(0,0,0,0.44)";
+    ctx.beginPath();
+    ctx.ellipse(0, 14, 14, 7.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // animated parameters
+    const t = (Date.now() % 2000) / 2000;
+    const pulse = 0.9 + Math.sin(t * Math.PI * 2) * 0.12;
+
+    // improved body: translucent layered skin with subtle veins and bioluminescent spots
+    const base = this.role === "miner" ? "#88ffd8" : "#57ffb3";
+    const bodyGrad = ctx.createRadialGradient(0, -4, 3, 0, 0, 20);
+    bodyGrad.addColorStop(0, lightenColor(base, 0.55));
+    bodyGrad.addColorStop(0.35, lightenColor(base, 0.18));
+    bodyGrad.addColorStop(0.7, base);
+    bodyGrad.addColorStop(1, darkenColor(base, 0.28));
+
+    // soft subsurface glow
+    withGlow("rgba(100,255,200,0.28)", 28, () => {
+      ctx.beginPath();
+      ctx.ellipse(0, -2, 14 * pulse, 18 * pulse, 0, 0, Math.PI * 2);
+      ctx.fillStyle = bodyGrad;
+      ctx.fill();
+    });
+
+    // main translucent shell
+    ctx.globalAlpha = 0.98;
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, -2, 11 * pulse, 14 * pulse, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // subtle skin veins / markings (static lines for texture)
+    ctx.strokeStyle = "rgba(20,80,60,0.08)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i++) {
+      const offX = -6 + i * 4;
+      ctx.beginPath();
+      ctx.moveTo(offX, -10);
+      ctx.bezierCurveTo(offX + 8, -6, offX + 2, 6, offX, 10);
+      ctx.stroke();
+    }
+
+    // bioluminescent spots that pulse
+    const spots = [
+      { x: -6, y: -2, s: 1.6 },
+      { x: 6, y: 0, s: 1.3 },
+      { x: -2, y: 4, s: 1.1 },
+      { x: 3, y: -6, s: 1.4 },
+    ];
+    spots.forEach((sp, i) => {
+      const glowCol = ["rgba(160,255,235,0.95)", "rgba(120,240,255,0.95)","rgba(200,255,200,0.95)","rgba(255,180,230,0.95)"][i % 4];
+      const g = ctx.createRadialGradient(sp.x, sp.y - 2, 0, sp.x, sp.y - 2, 12 * (0.7 + 0.3 * Math.sin(t * Math.PI * 2 + i)));
+      g.addColorStop(0, glowCol);
+      g.addColorStop(1, "rgba(255,255,255,0)");
+      withGlow(glowCol, 14 + i * 2, () => {
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 4 * sp.s * (0.9 + 0.15 * Math.sin(t * Math.PI * 2 + i)), 0, Math.PI * 2);
+        ctx.fill();
+      });
+      // center dot
+      ctx.fillStyle = lightenColor("#bfffe6", 0.12);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 1.1 * sp.s, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // reflective rim and translucency
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.ellipse(0, -2, 11.4 * pulse, 14.4 * pulse, -0.05, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // dynamic lower ring (energy) with animated wobble
+    const ringGrad = ctx.createLinearGradient(-12, 0, 12, 0);
+    ringGrad.addColorStop(0, "rgba(140,255,220,0.0)");
+    ringGrad.addColorStop(0.45, "rgba(160,255,235,0.85)");
+    ringGrad.addColorStop(1, "rgba(140,255,220,0.0)");
+    ctx.strokeStyle = ringGrad;
+    ctx.lineWidth = 3 + Math.sin(t * Math.PI * 2) * 0.6;
+    ctx.beginPath();
+    ctx.ellipse(0, 0 + Math.sin(t * Math.PI * 2) * 0.6, 12 + Math.sin(t * Math.PI * 2) * 0.8, 4 + Math.cos(t * Math.PI * 2) * 0.6, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // head dome with layered translucency and inner skull hint
+    const headGrad = ctx.createRadialGradient(0, -18, 2, 0, -18, 18);
+    headGrad.addColorStop(0, "rgba(255,255,255,0.95)");
+    headGrad.addColorStop(0.25, lightenColor(base, 0.35));
+    headGrad.addColorStop(0.7, base);
+    headGrad.addColorStop(1, darkenColor(base, 0.22));
+    ctx.fillStyle = headGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, -18, 12, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // subtle inner skull shadow for depth
+    ctx.fillStyle = "rgba(10,40,30,0.08)";
+    ctx.beginPath();
+    ctx.ellipse(0, -18, 7, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // expressive glossy eyes
+    ctx.fillStyle = "#080808";
+    ctx.beginPath();
+    ctx.ellipse(-5, -18, 3.6, 4.6, 0.12, 0, Math.PI * 2);
+    ctx.ellipse(5, -18, 3.6, 4.6, -0.12, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.beginPath();
+    ctx.arc(-6.2, -19.5, 1.1, 0, Math.PI * 2);
+    ctx.arc(4.2, -20, 0.9, 0, Math.PI * 2);
+    ctx.fill();
+
+    // thin limb hints (more organic tentacles that sway)
+    ctx.strokeStyle = "rgba(90,200,160,0.9)";
+    ctx.lineWidth = 2;
+    for (let i = -1; i <= 1; i++) {
+      const sx = i * 6;
+      const phase = t * Math.PI * 2 + i;
+      ctx.beginPath();
+      ctx.moveTo(sx, 2);
+      ctx.quadraticCurveTo(sx + Math.sin(phase) * 6, 8 + Math.cos(phase) * 6, sx + Math.sin(phase * 1.3) * 10, 16);
+      ctx.stroke();
+
+      // small glowing tip
+      withGlow("rgba(140,255,220,0.9)", 12, () => {
+        ctx.fillStyle = "rgba(180,255,230,0.95)";
+        ctx.beginPath();
+        const tipX = sx + Math.sin(phase * 1.3) * 10;
+        const tipY = 16;
+        ctx.arc(tipX, tipY, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // weapon energy blade (if any)
+    if (this.weaponType !== "none") {
+      let bladeColor = "#ffffff";
+      if (this.weaponType === "wood") bladeColor = "#8b5a2b";
+      else if (this.weaponType === "stone") bladeColor = "#b0b0b0";
+      else if (this.weaponType === "iron") bladeColor = "#b7bcc5";
+      else if (this.weaponType === "gold") bladeColor = "#ffd94a";
+      else if (this.weaponType === "diamond") bladeColor = "#88f0ff";
+      else if (this.weaponType === "ruby") bladeColor = "#e0253c";
+      else if (this.weaponType === "copper") bladeColor = "#c46b3a";
+      else if (this.weaponType === "lapis") bladeColor = "#2354b8";
+      else if (this.weaponType === "sapphire") bladeColor = "#1e7be5";
+      else if (this.weaponType === "netherite") bladeColor = "#2d2625";
+      else if (this.weaponType === "amandita") bladeColor = "#ff66c4";
+
+      const bladeGrad = ctx.createLinearGradient(10, -6, 16, -12);
+      bladeGrad.addColorStop(0, lightenColor(bladeColor, 0.3));
+      bladeGrad.addColorStop(1, darkenColor(bladeColor, 0.3));
+
+      // handle
+      ctx.strokeStyle = "#333";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(9, 4);
+      ctx.lineTo(11, -2);
+      ctx.stroke();
+
+      // luminous blade with stronger glow
+      withGlow(lightenColor(bladeColor, 0.7), 18, () => {
+        ctx.beginPath();
+        ctx.moveTo(11, -2);
+        ctx.lineTo(16, -10);
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = bladeGrad;
+        ctx.stroke();
+      });
+
+      ctx.strokeStyle = bladeGrad;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(11, -2);
+      ctx.lineTo(16, -10);
+      ctx.stroke();
+    }
+
+    // tiny orbiting particles for flair (two layers)
+    for (let layer = 0; layer < 2; layer++) {
+      const count = 3 + layer;
+      for (let i = 0; i < count; i++) {
+        const ang = (Math.PI * 2 * i) / count + t * (0.6 + layer * 0.3);
+        const rr = 16 + layer * 6;
+        const px = Math.cos(ang) * rr;
+        const py = Math.sin(ang) * (rr * 0.25) - 6;
+        ctx.fillStyle = layer === 0 ? "rgba(170,255,235,0.9)" : "rgba(200,255,200,0.6)";
+        ctx.beginPath();
+        ctx.arc(px, py, 1.2 + layer * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+}
+
+class Gef {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.hp = 120;
+    this.speed = 1.3;
+    this.buildCooldown = 0;
+  }
+
+  update() {
+    // reduzir cooldown de construção
+    if (this.buildCooldown > 0) {
+      this.buildCooldown--;
+    }
+
+    // atacar monstros próximos
+    monsters.forEach((m, i) => {
+      if (dist(this, m) < 25) {
+        m.hp -= 1.2;
+        if (m.hp <= 0) monsters.splice(i, 1);
+      }
+    });
+
+    // atacar rinocerontes próximos (GEF ajuda a segurar o rinoceronte)
+    rhinos.forEach((r, i) => {
+      if (dist(this, r) < 28) {
+        r.hp -= 1.8;
+        if (r.hp <= 0) rhinos.splice(i, 1);
+      }
+    });
+
+    // buscar humano e ameaças mais próximas
+    const nearestHuman = findNearest(this, humans);
+    const nearestRhino = findNearest(this, rhinos);
+    const nearestMonster = findNearest(this, monsters);
+
+    let dirX = 0;
+    let dirY = 0;
+
+    // comportamento defensivo/ofensivo mais inteligente
+    const threatCandidates = [];
+    if (nearestRhino) threatCandidates.push(nearestRhino);
+    if (nearestMonster) threatCandidates.push(nearestMonster);
+    const nearestThreat = threatCandidates.length
+      ? threatCandidates.reduce((best, t) =>
+          dist(this, t) < dist(this, best) ? t : best
+        )
+      : null;
+
+    if (nearestHuman) {
+      const dxH = nearestHuman.x - this.x;
+      const dyH = nearestHuman.y - this.y;
+      const distToHuman = Math.hypot(dxH, dyH) || 1;
+
+      // manter-se relativamente perto dos humanos
+      if (distToHuman > 70) {
+        dirX += (dxH / distToHuman) * 1.1;
+        dirY += (dyH / distToHuman) * 1.1;
+      }
+
+      // se existir ameaça, posicionar-se como "escudo" entre humano e ameaça
+      if (nearestThreat) {
+        const midX = (nearestHuman.x + nearestThreat.x) / 2;
+        const midY = (nearestHuman.y + nearestThreat.y) / 2;
+        const dxM = midX - this.x;
+        const dyM = midY - this.y;
+        const distToMid = Math.hypot(dxM, dyM) || 1;
+        dirX += (dxM / distToMid) * 1.3;
+        dirY += (dyM / distToMid) * 1.3;
+      }
+
+      // se estiver bem próximo do humano, tentar construir estruturas
+      if (distToHuman <= 60 && this.buildCooldown === 0) {
+        this.tryBuildHouseNear(nearestHuman);
+        this.tryBuildMarketNear(nearestHuman);
+        this.buildCooldown = 240; // ~4 segundos a 60fps, ~8s a 30fps (depende do monitor)
+      }
+    } else if (nearestThreat) {
+      // sem humano por perto: GEF ainda tenta controlar a ameaça
+      const dxT = nearestThreat.x - this.x;
+      const dyT = nearestThreat.y - this.y;
+      const distToThreat = Math.hypot(dxT, dyT) || 1;
+
+      // se com muita vida, aproxima mais; se estiver fraco, se afasta
+      if (this.hp > 60) {
+        dirX += dxT / distToThreat;
+        dirY += dyT / distToThreat;
+      } else {
+        dirX -= (dxT / distToThreat) * 1.3;
+        dirY -= (dyT / distToThreat) * 1.3;
+      }
+    }
+
+    // leve ruído para o movimento, mas menos caótico
+    dirX += rand(-0.12, 0.12);
+    dirY += rand(-0.12, 0.12);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * this.speed;
+    this.y += (dirY / len) * this.speed;
+
+    // mantém dentro da tela
+    this.x = Math.max(10, Math.min(canvas.width - 10, this.x));
+    this.y = Math.max(10, Math.min(canvas.height - 10, this.y));
+  }
+
+  tryBuildHouseNear(human) {
+    // limitar casas para no máximo a quantidade de humanos
+    if (houses.length >= humans.length) return;
+
+    // tenta construir casas em linha reta para a direita do humano
+    const spacing = 40;
+    const maxHousesInLine = 8;
+
+    for (let i = 1; i <= maxHousesInLine; i++) {
+      const hx = human.x + i * spacing;
+      const hy = human.y;
+
+      // dentro do mapa
+      if (hx < 20 || hy < 20 || hx > canvas.width - 20 || hy > canvas.height - 20) continue;
+
+      // não muito em cima de outra casa
+      let tooClose = false;
+      for (const house of houses) {
+        if (Math.hypot(house.x - hx, house.y - hy) < 40) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+
+      houses.push(new House(hx, hy));
+      // ao criar casa nova, chance de já ter um animal
+      spawnHouseAnimal(hx, hy);
+      break;
+    }
+  }
+
+  tryBuildMarketNear(human) {
+    // só constrói mercado para donos de mercado
+    if (human.role !== "marketOwner") return;
+
+    // número alvo de mercados = número de donos de mercado
+    const marketOwners = humans.filter((h) => h.role === "marketOwner").length;
+    if (markets.length >= marketOwners) return;
+
+    const spacing = 45;
+
+    for (let i = 1; i <= 4; i++) {
+      const angle = (Math.PI / 2) * i;
+      const mx = human.x + Math.cos(angle) * spacing;
+      const my = human.y + Math.sin(angle) * spacing;
+
+      if (mx < 30 || my < 30 || mx > canvas.width - 30 || my > canvas.height - 30)
+        continue;
+
+      // evitar ficar em cima de outras construções
+      let tooClose = false;
+      for (const house of houses) {
+        if (Math.hypot(house.x - mx, house.y - my) < 40) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (!tooClose) {
+        for (const market of markets) {
+          if (Math.hypot(market.x - mx, market.y - my) < 50) {
+            tooClose = true;
+            break;
+          }
+        }
+      }
+      if (tooClose) continue;
+
+      markets.push(new Market(mx, my));
+      break;
+    }
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // soft shadow
+    ctx.fillStyle = "rgba(0,0,0,0.32)";
+    ctx.beginPath();
+    ctx.ellipse(0, 14, 14, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // pulsing timer for subtle animation
+    const t = (Date.now() % 1000) / 1000;
+    const pulse = 0.9 + Math.sin(t * Math.PI * 2) * 0.08;
+
+    // energy halo under the GEF
+    withGlow("rgba(160,230,255,0.22)", 22, () => {
+      ctx.fillStyle = `rgba(150,220,255,${0.08 * pulse})`;
+      ctx.beginPath();
+      ctx.ellipse(0, 8, 22 * pulse, 8 * pulse, 0, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // body gradient (multilayered)
+    const bodyOuterGrad = ctx.createLinearGradient(0, -12, 0, 12);
+    bodyOuterGrad.addColorStop(0, "#ffeccf");
+    bodyOuterGrad.addColorStop(0.4, "#ffd7a8");
+    bodyOuterGrad.addColorStop(1, "#e2b889");
+
+    const bodyInnerGrad = ctx.createRadialGradient(0, -6, 2, 0, -2, 18);
+    bodyInnerGrad.addColorStop(0, "rgba(255,255,255,0.95)");
+    bodyInnerGrad.addColorStop(0.25, "rgba(255,240,210,0.9)");
+    bodyInnerGrad.addColorStop(0.7, "rgba(230,200,160,0.8)");
+    bodyInnerGrad.addColorStop(1, "rgba(180,140,100,0.6)");
+
+    // outer shell
+    ctx.fillStyle = bodyOuterGrad;
+    ctx.beginPath();
+    ctx.roundRect(-16, -26, 32, 36, 10);
+    ctx.fill();
+
+    // inner luminous torso
+    withGlow("rgba(255,200,120,0.32)", 26, () => {
+      ctx.fillStyle = bodyInnerGrad;
+      ctx.beginPath();
+      ctx.roundRect(-12, -22, 24, 30, 8);
+      ctx.fill();
+    });
+
+    // chest core (pulsing)
+    const coreRadius = 5 * pulse;
+    const coreGrad = ctx.createRadialGradient(0, -6, 1, 0, -6, 18);
+    coreGrad.addColorStop(0, "rgba(255,255,255,1)");
+    coreGrad.addColorStop(0.2, "rgba(255,220,140,0.95)");
+    coreGrad.addColorStop(0.6, "rgba(255,150,60,0.7)");
+    coreGrad.addColorStop(1, "rgba(255,100,30,0.08)");
+    ctx.fillStyle = coreGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, -6, coreRadius * 2.8, coreRadius * 1.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // delicate filaments/arcs around chest
+    ctx.strokeStyle = `rgba(255,200,120,${0.65 * pulse})`;
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 4; i++) {
+      const ang = i * (Math.PI / 2) + t * 0.8;
+      ctx.beginPath();
+      ctx.arc(Math.cos(ang) * 6, -6 + Math.sin(ang) * 2, 8 + i, Math.PI * 0.2, Math.PI * 0.9);
+      ctx.stroke();
+    }
+
+    // head dome with subtle rim highlight
+    const domeGrad = ctx.createRadialGradient(0, -28, 3, 0, -26, 26);
+    domeGrad.addColorStop(0, "rgba(255,245,230,0.98)");
+    domeGrad.addColorStop(0.35, "#fff0d6");
+    domeGrad.addColorStop(1, "#d9b58a");
+    ctx.fillStyle = domeGrad;
+    ctx.beginPath();
+    ctx.ellipse(0, -28, 18, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // glassy rim
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(0, -28, 18, 12, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // expressive eyes with sheen
+    const eyeY = -30;
+    ctx.fillStyle = "#0b0b0b";
+    ctx.beginPath();
+    ctx.ellipse(-6, eyeY, 3.6, 5.2, 0.2, 0, Math.PI * 2);
+    ctx.ellipse(6, eyeY, 3.6, 5.2, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.beginPath();
+    ctx.arc(-7, eyeY - 2, 1.1, 0, Math.PI * 2);
+    ctx.arc(5, eyeY - 3, 0.9, 0, Math.PI * 2);
+    ctx.fill();
+
+    // small mouth / expression line
+    ctx.strokeStyle = "rgba(80,40,20,0.85)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-4, -22);
+    ctx.quadraticCurveTo(0, -20 + Math.sin(t * Math.PI * 2) * 0.5, 4, -22);
+    ctx.stroke();
+
+    // antenna with pulsing orb
+    ctx.strokeStyle = "rgba(120,80,40,0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, -34);
+    ctx.lineTo(0, -44);
+    ctx.stroke();
+
+    const orbPulse = 0.6 + Math.sin(t * Math.PI * 2) * 0.25;
+    withGlow("rgba(255,190,80,0.6)", 18, () => {
+      ctx.fillStyle = `rgba(255,200,110,${0.9 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(0, -48, 4 * orbPulse, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.fillStyle = "#ffd489";
+    ctx.beginPath();
+    ctx.arc(0, -48, 3 * orbPulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,230,180,0.6)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.arc(0, -48, 3.6 * orbPulse, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // back plating details
+    ctx.strokeStyle = "rgba(100,60,30,0.25)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.roundRect(-8 + i * 6, -12 + i * 4, 6, 16 - i * 4, 2);
+      ctx.stroke();
+    }
+
+    // subtle highlight strokes
+    ctx.strokeStyle = "rgba(255,255,255,0.14)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-12, -6);
+    ctx.lineTo(-4, -14);
+    ctx.moveTo(12, -6);
+    ctx.lineTo(4, -14);
+    ctx.stroke();
+
+    // restore
+    ctx.restore();
+  }
+}
+
+class House {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.level = 1; // 1 = simples, 2 = evoluída
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // sombra
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.beginPath();
+    ctx.ellipse(0, 14, 16, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (this.level === 1) {
+      // casa simples
+      ctx.fillStyle = "#f0e0c0";
+      ctx.strokeStyle = "#b08c5a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(-16, -10, 32, 24, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#c55b3f";
+      ctx.strokeStyle = "#7e3320";
+      ctx.beginPath();
+      ctx.moveTo(-20, -10);
+      ctx.lineTo(0, -24);
+      ctx.lineTo(20, -10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      // casa evoluída (maior, com chaminé)
+      ctx.fillStyle = "#f7f0d8";
+      ctx.strokeStyle = "#c29a64";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(-20, -14, 40, 30, 5);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#d26b45";
+      ctx.strokeStyle = "#8b3922";
+      ctx.beginPath();
+      ctx.moveTo(-24, -14);
+      ctx.lineTo(0, -30);
+      ctx.lineTo(24, -14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // chaminé
+      ctx.fillStyle = "#b08c5a";
+      ctx.beginPath();
+      ctx.roundRect(10, -24, 8, 10, 2);
+      ctx.fill();
+    }
+
+    // porta
+    ctx.fillStyle = "#8b5a2b";
+    ctx.beginPath();
+    ctx.roundRect(-5, 0, 10, 14, 2);
+    ctx.fill();
+
+    // janela
+    ctx.fillStyle = "#a8d8ff";
+    ctx.strokeStyle = "#6a8ca5";
+    ctx.beginPath();
+    ctx.roundRect(8, -3, 8, 8, 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+class Market {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // sombra
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.beginPath();
+    ctx.ellipse(0, 18, 24, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // base do prédio
+    ctx.fillStyle = "#f5efe0";
+    ctx.strokeStyle = "#b79a6a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(-24, -6, 48, 28, 5);
+    ctx.fill();
+    ctx.stroke();
+
+    // faixa colorida (toldo do mercado)
+    const stripeColors = ["#ff5555", "#ffcc55", "#55c65a", "#55a6ff"];
+    const stripeWidth = 8;
+    for (let i = 0; i < stripeColors.length; i++) {
+      ctx.fillStyle = stripeColors[i];
+      ctx.beginPath();
+      ctx.roundRect(-24 + i * stripeWidth * 1.2, -10, stripeWidth, 8, 2);
+      ctx.fill();
+    }
+
+    // placa "Y" (Yoko)
+    ctx.fillStyle = "#222";
+    ctx.font = "10px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("Y", 0, 5);
+
+    // porta
+    ctx.fillStyle = "#8b5a2b";
+    ctx.beginPath();
+    ctx.roundRect(-6, 4, 12, 16, 3);
+    ctx.fill();
+
+    // vitrines
+    ctx.fillStyle = "#a8d8ff";
+    ctx.strokeStyle = "#6a8ca5";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(-20, 2, 10, 10, 2);
+    ctx.roundRect(10, 2, 10, 10, 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+class GameShop {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // sombra
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.beginPath();
+    ctx.ellipse(0, 22, 28, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // glow for marquee
+    const grad = ctx.createLinearGradient(-26, -10, 26, -10);
+    grad.addColorStop(0, "#ff5f6d");
+    grad.addColorStop(0.5, "#ffc371");
+    grad.addColorStop(1, "#4facfe");
+
+    // desenha faixa com brilho por baixo
+    withGlow("rgba(255,140,120,0.7)", 18, () => {
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.roundRect(-26, -12, 52, 10, 4);
+      ctx.fill();
+    });
+
+    // base da loja de jogos (com leve iluminação)
+    ctx.fillStyle = "#f2f4ff";
+    ctx.strokeStyle = "#7a8cc4";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(-26, -6, 52, 30, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    // ícone de controle (acrescenta brilho nos botões)
+    ctx.fillStyle = "#222";
+    ctx.beginPath();
+    ctx.roundRect(-8, -4, 16, 10, 4);
+    ctx.fill();
+    // botões com leve glow
+    withGlow("rgba(244,67,54,0.6)", 10, () => {
+      ctx.fillStyle = "#f44336";
+      ctx.beginPath();
+      ctx.arc(-4, 1, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    withGlow("rgba(76,175,80,0.6)", 10, () => {
+      ctx.fillStyle = "#4caf50";
+      ctx.beginPath();
+      ctx.arc(4, 1, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // porta (sombra mais pronunciada)
+    ctx.fillStyle = "#8b5a2b";
+    ctx.beginPath();
+    ctx.roundRect(-6, 4, 12, 18, 3);
+    ctx.fill();
+
+    // vitrines com leve brilho
+    withGlow("rgba(160,216,255,0.5)", 12, () => {
+      ctx.fillStyle = "#a8d8ff";
+      ctx.beginPath();
+      ctx.roundRect(-22, 4, 12, 12, 3);
+      ctx.roundRect(10, 4, 12, 12, 3);
+      ctx.fill();
+    });
+    ctx.strokeStyle = "#6a8ca5";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(-22, 4, 12, 12, 3);
+    ctx.roundRect(10, 4, 12, 12, 3);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+class Mine {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.productionTimer = 0;
+  }
+
+  update(dt) {
+    // conta quantos escavadores estão trabalhando perto da mina
+    const minersWorking = humans.filter(
+      (h) => h.role === "miner" && dist(h, this) < 20
+    ).length;
+
+    if (minersWorking > 0) {
+      this.productionTimer += dt * minersWorking;
+      // a cada ~2 segundos por escavador médio, gera um pouco de amandita
+      const threshold = 2;
+      while (this.productionTimer >= threshold) {
+        this.productionTimer -= threshold;
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 20 + Math.random() * 10;
+        const rx = this.x + Math.cos(angle) * radius;
+        const ry = this.y + Math.sin(angle) * radius;
+        if (
+          rx > 10 &&
+          ry > 10 &&
+          rx < canvas.width - 10 &&
+          ry < canvas.height - 10
+        ) {
+          resources.push(new Resource(rx, ry, "amandita"));
+        }
+      }
+    } else {
+      // sem escavadores, desacelera o timer
+      this.productionTimer = Math.max(0, this.productionTimer - dt * 0.5);
+    }
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // sombra
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    ctx.beginPath();
+    ctx.ellipse(0, 20, 26, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // entrada da mina (rocha)
+    ctx.fillStyle = "#5a4a42";
+    ctx.strokeStyle = "#2e241f";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(-26, -6, 52, 32, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    // buraco escuro
+    ctx.fillStyle = "#111";
+    ctx.beginPath();
+    ctx.roundRect(-16, 0, 32, 20, 6);
+    ctx.fill();
+
+    // suporte de madeira
+    ctx.strokeStyle = "#8b5a2b";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-16, 0);
+    ctx.lineTo(-16, 18);
+    ctx.moveTo(16, 0);
+    ctx.lineTo(16, 18);
+    ctx.moveTo(-16, 2);
+    ctx.lineTo(16, 2);
+    ctx.stroke();
+
+    // trilhos
+    ctx.strokeStyle = "#444";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-14, 12);
+    ctx.lineTo(14, 20);
+    ctx.moveTo(-10, 10);
+    ctx.lineTo(18, 18);
+    ctx.stroke();
+
+    // pequena placa
+    ctx.fillStyle = "#f4d14a";
+    ctx.beginPath();
+    ctx.roundRect(-8, -10, 16, 8, 3);
+    ctx.fill();
+    ctx.fillStyle = "#222";
+    ctx.font = "8px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("MINA", 0, -4);
+
+    ctx.restore();
+  }
+}
+
+class SmallCity {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // rua vertical
+    ctx.fillStyle = "#555";
+    ctx.fillRect(-10, -120, 20, 240);
+
+    // linha central da rua
+    ctx.strokeStyle = "#ddd";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 8]);
+    ctx.beginPath();
+    ctx.moveTo(0, -115);
+    ctx.lineTo(0, 115);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // função auxiliar para desenhar uma casinha pequena
+    const drawSmallHouse = (offsetX, offsetY) => {
+      ctx.save();
+      ctx.translate(offsetX, offsetY);
+
+      // corpo
+      ctx.fillStyle = "#f7f0d8";
+      ctx.strokeStyle = "#c29a64";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(-12, -10, 24, 20, 3);
+      ctx.fill();
+      ctx.stroke();
+
+      // telhado
+      ctx.fillStyle = "#d26b45";
+      ctx.strokeStyle = "#8b3922";
+      ctx.beginPath();
+      ctx.moveTo(-14, -10);
+      ctx.lineTo(0, -20);
+      ctx.lineTo(14, -10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // porta
+      ctx.fillStyle = "#8b5a2b";
+      ctx.beginPath();
+      ctx.roundRect(-4, -2, 8, 12, 2);
+      ctx.fill();
+
+      // janela
+      ctx.fillStyle = "#a8d8ff";
+      ctx.strokeStyle = "#6a8ca5";
+      ctx.beginPath();
+      ctx.roundRect(6, -5, 6, 6, 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.restore();
+    };
+
+    // 10 casas enfileiradas na vertical de cada lado da rua
+    const count = 10;
+    const spacing = 22;
+    const startY = -((count - 1) * spacing) / 2;
+
+    for (let i = 0; i < count; i++) {
+      const y = startY + i * spacing;
+      // esquerda
+      drawSmallHouse(-40, y);
+      // direita
+      drawSmallHouse(40, y);
+    }
+
+    ctx.restore();
+  }
+}
+
+class Farm {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.food = 5;
+    this.maxFood = 60;
+  }
+
+  update() {
+    // regenera lentamente mesmo sem fazendeiro
+    this.food = Math.min(this.maxFood, this.food + 0.005);
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // sombra
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.beginPath();
+    ctx.ellipse(0, 16, 20, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // terra
+    ctx.fillStyle = "#8b5a2b";
+    ctx.beginPath();
+    ctx.roundRect(-20, -8, 40, 24, 4);
+    ctx.fill();
+
+    // fileiras de plantas
+    const rows = 3;
+    for (let i = 0; i < rows; i++) {
+      const y = -4 + i * 6;
+      const intensity = Math.min(1, this.food / this.maxFood + i * 0.1);
+      const green = Math.floor(120 + 80 * intensity);
+      ctx.strokeStyle = `rgb(40,${green},40)`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-16, y);
+      ctx.lineTo(16, y);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+}
+
+class Cat {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.speed = 1.3;
+    this.inside = false;
+    this.insideTimer = 0;
+  }
+
+  update() {
+    const nearestHouse = findNearest(this, houses);
+    if (this.inside) {
+      this.insideTimer--;
+      if (this.insideTimer <= 0) {
+        this.inside = false;
+      }
+      return;
+    }
+
+    let dirX = 0;
+    let dirY = 0;
+
+    if (nearestHouse) {
+      const dx = nearestHouse.x - this.x;
+      const dy = nearestHouse.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d > 10) {
+        dirX = dx / d;
+        dirY = dy / d;
+      } else if (Math.random() < 0.01) {
+        // entra na casa
+        this.inside = true;
+        this.insideTimer = 200 + Math.floor(Math.random() * 200);
+      }
+    }
+
+    dirX += rand(-0.25, 0.25);
+    dirY += rand(-0.25, 0.25);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * this.speed;
+    this.y += (dirY / len) * this.speed;
+
+    this.x = Math.max(5, Math.min(canvas.width - 5, this.x));
+    this.y = Math.max(5, Math.min(canvas.height - 5, this.y));
+  }
+
+  draw() {
+    if (this.inside) return; // escondido na casa
+
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // sombra
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.beginPath();
+    ctx.ellipse(0, 5, 6, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // corpo
+    ctx.fillStyle = "#d0d0d0";
+    ctx.beginPath();
+    ctx.roundRect(-6, -6, 12, 8, 3);
+    ctx.fill();
+
+    // cabeça
+    ctx.beginPath();
+    ctx.roundRect(-5, -11, 10, 7, 3);
+    ctx.fill();
+
+    // orelhas
+    ctx.fillStyle = "#c0c0c0";
+    ctx.beginPath();
+    ctx.moveTo(-4, -11);
+    ctx.lineTo(-7, -15);
+    ctx.lineTo(-1, -11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(4, -11);
+    ctx.lineTo(7, -15);
+    ctx.lineTo(1, -11);
+    ctx.closePath();
+    ctx.fill();
+
+    // olhos
+    ctx.fillStyle = "#000";
+    ctx.beginPath();
+    ctx.arc(-2, -8, 1, 0, Math.PI * 2);
+    ctx.arc(2, -8, 1, 0, Math.PI * 2);
+    ctx.fill();
+
+    // rabo
+    ctx.strokeStyle = "#d0d0d0";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(6, -4);
+    ctx.quadraticCurveTo(10, -8, 8, -1);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+class Dog {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.speed = 1.5;
+    this.inside = false;
+    this.insideTimer = 0;
+  }
+
+  update() {
+    const nearestHouse = findNearest(this, houses);
+    if (this.inside) {
+      this.insideTimer--;
+      if (this.insideTimer <= 0) {
+        this.inside = false;
+      }
+      return;
+    }
+
+    let dirX = 0;
+    let dirY = 0;
+
+    if (nearestHouse) {
+      const dx = nearestHouse.x - this.x;
+      const dy = nearestHouse.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d > 14) {
+        dirX = dx / d;
+        dirY = dy / d;
+      } else if (Math.random() < 0.01) {
+        // entra na casa
+        this.inside = true;
+        this.insideTimer = 200 + Math.floor(Math.random() * 200);
+      }
+    }
+
+    dirX += rand(-0.18, 0.18);
+    dirY += rand(-0.18, 0.18);
+
+    const len = Math.hypot(dirX, dirY) || 1;
+    this.x += (dirX / len) * this.speed;
+    this.y += (dirY / len) * this.speed;
+
+    this.x = Math.max(5, Math.min(canvas.width - 5, this.x));
+    this.y = Math.max(5, Math.min(canvas.height - 5, this.y));
+  }
+
+  draw() {
+    if (this.inside) return;
+
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // sombra
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.beginPath();
+    ctx.ellipse(0, 5, 7, 3.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // corpo
+    ctx.fillStyle = "#c89b5c";
+    ctx.beginPath();
+    ctx.roundRect(-7, -6, 14, 9, 3);
+    ctx.fill();
+
+    // cabeça
+    ctx.beginPath();
+    ctx.roundRect(-6, -11, 10, 7, 3);
+    ctx.fill();
+
+    // orelhas caídas
+    ctx.beginPath();
+    ctx.roundRect(-6, -11, 3, 6, 2);
+    ctx.roundRect(3, -11, 3, 6, 2);
+    ctx.fill();
+
+    // olhos
+    ctx.fillStyle = "#000";
+    ctx.beginPath();
+    ctx.arc(-2, -8, 1, 0, Math.PI * 2);
+    ctx.arc(2, -8, 1, 0, Math.PI * 2);
+    ctx.fill();
+
+    // coleira
+    ctx.strokeStyle = "#e13b3b";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-5, -6);
+    ctx.lineTo(5, -6);
+    ctx.stroke();
+
+    // rabo
+    ctx.strokeStyle = "#c89b5c";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-7, -3);
+    ctx.quadraticCurveTo(-11, -7, -8, -1);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+function spawnHouseAnimal(x, y) {
+  if (Math.random() < 0.5) {
+    cats.push(new Cat(x + rand(-10, 10), y + rand(-10, 10)));
+  } else {
+    dogs.push(new Dog(x + rand(-10, 10), y + rand(-10, 10)));
+  }
+}
+
+class Resource {
+  constructor(x, y, type) {
+    this.x = x;
+    this.y = y;
+    this.type = type;
+  }
+
+  draw() {
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // shadow (soft)
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    ctx.beginPath();
+    ctx.ellipse(0, 6, 8, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // animated time-based parameter for subtle sparkle
+    const t = (Date.now() % 1200) / 1200;
+    const sparklePhase = Math.abs(Math.sin(t * Math.PI * 2));
+
+    // determine if bright (gems/metals) and glow color
+    const brightTypes = ["diamond", "ruby", "sapphire", "amandita", "gold"];
+    const isBright = brightTypes.includes(this.type);
+    const glowMap = {
+      diamond: "rgba(120,230,255,0.92)",
+      ruby: "rgba(255,70,90,0.92)",
+      sapphire: "rgba(50,140,255,0.92)",
+      amandita: "rgba(255,120,200,0.92)",
+      gold: "rgba(255,210,90,0.88)",
+    };
+    const glowCol = glowMap[this.type] || "rgba(255,255,255,0.7)";
+
+    // helper to draw faceted gem silhouette with facet strokes
+    const drawFaceted = (colorA, colorB, strokeCol, points) => {
+      // colorA may be a string or an already-created CanvasGradient.
+      // If it's a gradient, use it directly; otherwise create a new gradient from the two color strings.
+      let fillStyle;
+      if (colorA && typeof colorA.addColorStop === "function") {
+        // colorA is already a CanvasGradient
+        fillStyle = colorA;
+      } else {
+        const g = ctx.createLinearGradient(0, -12, 0, 10);
+        g.addColorStop(0, colorA);
+        g.addColorStop(1, colorB);
+        fillStyle = g;
+      }
+
+      // main fill using the resolved fillStyle
+      ctx.fillStyle = fillStyle;
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+      ctx.closePath();
+      ctx.fill();
+
+      // subtle inner facets (light strokes)
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = 0.8;
+      for (let i = 1; i < points.length - 1; i++) {
+        ctx.beginPath();
+        ctx.moveTo(
+          points[0].x * 0.2 + points[i].x * 0.8,
+          points[0].y * 0.2 + points[i].y * 0.8
+        );
+        ctx.lineTo(
+          points[i].x * 0.6 + points[i + 1].x * 0.4,
+          points[i].y * 0.6 + points[i + 1].y * 0.4
+        );
+        ctx.stroke();
+      }
+    };
+
+    // core drawing for each type with richer visuals
+    const drawCore = () => {
+      if (this.type === "wood") {
+        // wooden log with deeper rings and highlight
+        ctx.fillStyle = "#6b4f2c";
+        ctx.strokeStyle = "#3a2412";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.roundRect(-9, -10, 18, 14, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        // rings
+        ctx.strokeStyle = "rgba(140,90,50,0.9)";
+        ctx.lineWidth = 0.9;
+        for (let i = -6; i <= 6; i += 3) {
+          ctx.beginPath();
+          ctx.ellipse(i * 0.1, -3 + (i * 0.07), 6 - Math.abs(i) * 0.6, 2 + Math.abs(i) * 0.18, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      } else if (this.type === "stone") {
+        // rough stone with micro-speculars
+        const base = "#7a7a7a";
+        const inner = "#5a5a5a";
+        const grad = ctx.createLinearGradient(0, -8, 0, 8);
+        grad.addColorStop(0, lightenColor(base, 0.12));
+        grad.addColorStop(1, inner);
+        ctx.fillStyle = grad;
+        ctx.strokeStyle = "#3f3f3f";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(-9, -4);
+        ctx.lineTo(-3, -10);
+        ctx.lineTo(4, -9);
+        ctx.lineTo(9, -3);
+        ctx.lineTo(5, 3);
+        ctx.lineTo(-4, 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // small light specks
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        for (let i = 0; i < 3; i++) {
+          ctx.beginPath();
+          ctx.arc(rand(-5, 6), rand(-6, 4), rand(0.6, 1.4), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (this.type === "iron") {
+        // iron chunk with cooler metal sheen
+        const g = ctx.createLinearGradient(0, -10, 0, 10);
+        g.addColorStop(0, "#edf3f6");
+        g.addColorStop(0.6, "#c3c7cc");
+        g.addColorStop(1, "#9aa0a5");
+        drawFaceted(g, "#9aa0a5", "rgba(255,255,255,0.08)", [
+          { x: 0, y: -10 },
+          { x: 7, y: -3 },
+          { x: 5, y: 5 },
+          { x: -5, y: 5 },
+          { x: -8, y: -3 },
+        ]);
+        // thin metallic streaks
+        ctx.strokeStyle = "rgba(255,255,255,0.12)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-3, -3);
+        ctx.lineTo(3, -6);
+        ctx.stroke();
+      } else if (this.type === "gold") {
+        // faceted gold with warm glow
+        const gA = "#fff1b8";
+        const gB = "#ffcc3a";
+        drawFaceted(gA, gB, "rgba(255,255,255,0.22)", [
+          { x: 0, y: -10 },
+          { x: 7, y: -2 },
+          { x: 4, y: 6 },
+          { x: -4, y: 6 },
+          { x: -7, y: -2 },
+        ]);
+        // strong specular
+        ctx.strokeStyle = "rgba(255,255,255,0.6)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(-1, -6);
+        ctx.lineTo(1, -9);
+        ctx.stroke();
+      } else if (this.type === "diamond") {
+        // diamond: multi-facet with cold blue-white facets
+        const baseA = "#bff8ff";
+        const baseB = "#62dff0";
+        drawFaceted(baseA, baseB, "rgba(255,255,255,0.9)", [
+          { x: 0, y: -11 },
+          { x: 8, y: -2 },
+          { x: 3, y: 9 },
+          { x: -3, y: 9 },
+          { x: -8, y: -2 },
+        ]);
+        // central sparkle (pulsing)
+        const spR = 1.6 + sparklePhase * 1.8;
+        withGlow("rgba(160,230,255,0.95)", 20, () => {
+          ctx.fillStyle = "rgba(220,255,255,0.95)";
+          ctx.beginPath();
+          ctx.arc(0, -2, spR, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        // fine white lines
+        ctx.strokeStyle = "rgba(255,255,255,0.85)";
+        ctx.lineWidth = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(-2, -6);
+        ctx.lineTo(0, -11);
+        ctx.lineTo(2, -6);
+        ctx.stroke();
+      } else if (this.type === "ruby") {
+        // ruby: deep red facets with warm highlights
+        drawFaceted("#ffb3b8", "#b71c2a", "rgba(255,200,200,0.7)", [
+          { x: 0, y: -11 },
+          { x: 7, y: -3 },
+          { x: 5, y: 7 },
+          { x: -5, y: 7 },
+          { x: -7, y: -3 },
+        ]);
+        // pulsing highlight
+        withGlow("rgba(255,80,100,0.88)", 18 + sparklePhase * 8, () => {
+          ctx.fillStyle = "rgba(255,120,130,0.95)";
+          ctx.beginPath();
+          ctx.arc(2, -3, 1.4 + sparklePhase * 0.8, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      } else if (this.type === "copper") {
+        // copper with warm gradient and slight patina
+        drawFaceted("#ffd9b8", "#b85b2a", "rgba(255,240,210,0.45)", [
+          { x: 0, y: -9 },
+          { x: 7, y: -1 },
+          { x: 4, y: 6 },
+          { x: -4, y: 6 },
+          { x: -7, y: -1 },
+        ]);
+        ctx.fillStyle = "rgba(20,40,20,0.06)";
+        ctx.beginPath();
+        ctx.arc(-2, 1, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (this.type === "lapis") {
+        // lapis: deep blue with bright specks
+        drawFaceted("#6aa0ff", "#123e9a", "rgba(200,220,255,0.28)", [
+          { x: -6, y: -6 },
+          { x: -1, y: -10 },
+          { x: 6, y: -6 },
+          { x: 7, y: 4 },
+          { x: -5, y: 4 },
+        ]);
+        // light specks (minerals)
+        ctx.fillStyle = "rgba(220,240,255,0.6)";
+        ctx.beginPath();
+        ctx.arc(-2, -4, 0.9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(2, -1, 0.7, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (this.type === "sapphire") {
+        // sapphire: saturated blue facets and crisp highlights
+        drawFaceted("#cfe9ff", "#1f6be0", "rgba(220,240,255,0.8)", [
+          { x: 0, y: -11 },
+          { x: 6, y: -3 },
+          { x: 4, y: 7 },
+          { x: -4, y: 7 },
+          { x: -6, y: -3 },
+        ]);
+        ctx.strokeStyle = "rgba(255,255,255,0.6)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-1, -6);
+        ctx.lineTo(1, -9);
+        ctx.stroke();
+      } else if (this.type === "netherite") {
+        // netherite: heavy metallic block with layered detailing
+        ctx.fillStyle = "#2b2626";
+        ctx.strokeStyle = "#0f0b0a";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.roundRect(-9, -9, 18, 14, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = "#6b5b52";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-6, -5);
+        ctx.lineTo(6, -5);
+        ctx.moveTo(-5, -1);
+        ctx.lineTo(5, -1);
+        ctx.stroke();
+      } else if (this.type === "amandita") {
+        // amandita: pink crystal with strong glow and internal facets
+        drawFaceted("#ffd0f0", "#ff66c4", "rgba(255,230,250,0.9)", [
+          { x: 0, y: -12 },
+          { x: 7, y: -3 },
+          { x: 5, y: 8 },
+          { x: -5, y: 8 },
+          { x: -7, y: -3 },
+        ]);
+        // glowing core
+        withGlow("rgba(255,110,185,0.92)", 22 + sparklePhase * 10, () => {
+          ctx.fillStyle = "rgba(255,150,210,0.9)";
+          ctx.beginPath();
+          ctx.arc(0, -2, 2 + sparklePhase * 1.4, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      } else {
+        // fallback: simple shiny nugget
+        ctx.fillStyle = "#bdbdbd";
+        ctx.beginPath();
+        ctx.roundRect(-7, -7, 14, 12, 3);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.7)";
+        ctx.lineWidth = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(-2, -6);
+        ctx.lineTo(2, -9);
+        ctx.stroke();
+      }
+    };
+
+    // if bright, draw glow beneath core with stronger radius, else a small subtle glow
+    if (isBright) {
+      withGlow(glowCol, 22, drawCore);
+    } else {
+      // subtle ambient glow for metals like iron/copper
+      withGlow("rgba(0,0,0,0.04)", 6, drawCore);
+    }
+
+    // draw core shapes normally on top of glow for crisp edges
+    drawCore();
+
+    // animated micro-sparkles for gems
+    if (isBright) {
+      const sparkleCount = 2;
+      for (let i = 0; i < sparkleCount; i++) {
+        const angle = i * Math.PI + t * (0.8 + i * 0.2);
+        const rx = Math.cos(angle) * (6 + i * 1.6);
+        const ry = Math.sin(angle) * (3 + i * 1.2) - 2;
+        const rsize = 0.9 + sparklePhase * 1.6 * (i + 1) * 0.6;
+        ctx.fillStyle = "rgba(255,255,255," + (0.6 * (0.4 + sparklePhase * 0.6)) + ")";
+        ctx.beginPath();
+        ctx.arc(rx, ry, rsize, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
+  }
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function rand(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+// utilitários de cor para melhorar as skins (usados nos sprites)
+function lightenColor(hex, amount = 0.2) {
+  const col = parseInt(hex.replace("#", ""), 16);
+  const r = col >> 16;
+  const g = (col >> 8) & 0xff;
+  const b = col & 0xff;
+
+  const nr = Math.min(255, Math.round(r + (255 - r) * amount));
+  const ng = Math.min(255, Math.round(g + (255 - g) * amount));
+  const nb = Math.min(255, Math.round(b + (255 - b) * amount));
+
+  return (
+    "#" +
+    nr.toString(16).padStart(2, "0") +
+    ng.toString(16).padStart(2, "0") +
+    nb.toString(16).padStart(2, "0")
+  );
+}
+
+function darkenColor(hex, amount = 0.2) {
+  const col = parseInt(hex.replace("#", ""), 16);
+  const r = col >> 16;
+  const g = (col >> 8) & 0xff;
+  const b = col & 0xff;
+
+  const nr = Math.max(0, Math.round(r * (1 - amount)));
+  const ng = Math.max(0, Math.round(g * (1 - amount)));
+  const nb = Math.max(0, Math.round(b * (1 - amount)));
+
+  return (
+    "#" +
+    nr.toString(16).padStart(2, "0") +
+    ng.toString(16).padStart(2, "0") +
+    nb.toString(16).padStart(2, "0")
+  );
+}
+
+function loop(timestamp) {
+  if (lastTime === null) lastTime = timestamp;
+  const dt = (timestamp - lastTime) / 1000;
+  lastTime = timestamp;
+
+  // --- ATUALIZAÇÃO DA SIMULAÇÃO (respeita pausa e velocidade) ---
+  if (!isPaused) {
+    const steps = Math.max(1, simSpeed);
+
+    for (let step = 0; step < steps; step++) {
+      // atualizar Yoko: +10 por segundo para cada mercado existente
+      yoko += markets.length * 10 * dt;
+      // lojas de jogos dão um grande bônus de Yoko
+      yoko += gameShops.length * 100 * dt;
+      // minas de escavadores aumentam ainda mais o patrimônio
+      yoko += mines.length * 50 * dt;
+
+      // criar cidade pequena quando houver 35 casas ou mais (apenas uma vez)
+      if (!smallCityCreated && houses.length >= 35) {
+        smallCities.push(new SmallCity(canvas.width / 2, canvas.height / 2));
+        smallCityCreated = true;
+      }
+
+      // minas
+      mines.forEach((mine) => {
+        mine.update(dt);
+      });
+
+      // fazendas
+      farms.forEach((farm) => {
+        farm.update();
+      });
+
+      // personagens
+      humans.forEach((h) => {
+        h.update();
+      });
+
+      gefs.forEach((g) => {
+        g.update();
+      });
+
+      rhinos.forEach((r) => {
+        r.update();
+      });
+
+      aliens.forEach((a) => {
+        a.update();
+      });
+
+      monsters.forEach((m) => {
+        m.update();
+      });
+
+      // animais
+      cats.forEach((c) => {
+        c.update();
+      });
+      dogs.forEach((d) => {
+        d.update();
+      });
+    }
+  }
+
+  yokoDisplay.textContent = "Yoko: " + Math.floor(yoko);
+
+  // --- DESENHO (sempre desenha o estado atual) ---
+
+  // fundo: varia conforme o mundo selecionado (terra, marte, lua)
+  ctx.save();
+
+  if (world === "earth") {
+    // base verde clara (Terra)
+    ctx.fillStyle = "#c8f1a6";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // riscos verticais escuros (fileiras de grama)
+    ctx.strokeStyle = "rgba(30,100,30,0.12)";
+    ctx.lineWidth = 2;
+    const stripeSpacing = 36;
+    for (let x = -stripeSpacing; x < canvas.width + stripeSpacing; x += stripeSpacing) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, canvas.height);
+      ctx.stroke();
+    }
+
+    // linhas finas diagonais para textura (estáticas)
+    ctx.strokeStyle = "rgba(20,80,20,0.06)";
+    ctx.lineWidth = 1;
+    for (let y = 0; y < canvas.height; y += 18) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width, y - 8);
+      ctx.stroke();
+    }
+
+    // leve sombra no canto inferior
+    const cornerGradE = ctx.createLinearGradient(0, canvas.height * 0.7, 0, canvas.height);
+    cornerGradE.addColorStop(0, "rgba(0,0,0,0)");
+    cornerGradE.addColorStop(1, "rgba(0,0,0,0.06)");
+    ctx.fillStyle = cornerGradE;
+    ctx.fillRect(0, canvas.height * 0.7, canvas.width, canvas.height * 0.3);
+  } else if (world === "mars") {
+    // Marte: solo avermelhado com textura rochosa e poeira
+    ctx.fillStyle = "#8f3320";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // faixas rochosas
+    ctx.strokeStyle = "rgba(40,20,15,0.14)";
+    ctx.lineWidth = 2;
+    const marsSpacing = 42;
+    for (let x = -marsSpacing; x < canvas.width + marsSpacing; x += marsSpacing) {
+      ctx.beginPath();
+      ctx.moveTo(x + 8, 0);
+      ctx.lineTo(x - 8, canvas.height);
+      ctx.stroke();
+    }
+
+    // poeira suave no topo
+    const cornerGradM = ctx.createLinearGradient(0, 0, 0, canvas.height * 0.5);
+    cornerGradM.addColorStop(0, "rgba(255,220,200,0.06)");
+    cornerGradM.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = cornerGradM;
+    ctx.fillRect(0, 0, canvas.width, canvas.height * 0.5);
+  } else if (world === "moon") {
+    // Lua: superfície acinzentada e crateras escuras; céu estrelado
+    ctx.fillStyle = "#9a9a9a";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // crateras: alguns círculos escuros
+    ctx.fillStyle = "rgba(50,50,50,0.14)";
+    for (let i = 0; i < 30; i++) {
+      const rx = Math.random() * canvas.width;
+      const ry = Math.random() * canvas.height;
+      const r = 12 + Math.random() * 40;
+      ctx.beginPath();
+      ctx.ellipse(rx, ry, r, r * 0.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // subtle vignette
+    const cornerGradL = ctx.createLinearGradient(0, canvas.height * 0.6, 0, canvas.height);
+    cornerGradL.addColorStop(0, "rgba(0,0,0,0)");
+    cornerGradL.addColorStop(1, "rgba(0,0,0,0.14)");
+    ctx.fillStyle = cornerGradL;
+    ctx.fillRect(0, canvas.height * 0.6, canvas.width, canvas.height * 0.4);
+  }
+
+  ctx.restore();
+
+  // casas primeiro (para aparecerem no chão)
+  houses.forEach((house) => house.draw());
+
+  // cidades pequenas
+  smallCities.forEach((city) => city.draw());
+
+  // minas
+  mines.forEach((mine) => {
+    mine.draw();
+  });
+
+  // fazendas
+  farms.forEach((farm) => {
+    farm.draw();
+  });
+
+  // mercados
+  markets.forEach((market) => market.draw());
+
+  // lojas de jogos
+  gameShops.forEach((shop) => shop.draw());
+
+  // recursos
+  resources.forEach((r) => r.draw());
+
+  // personagens
+  humans.forEach((h) => {
+    h.draw();
+  });
+
+  gefs.forEach((g) => {
+    g.draw();
+  });
+
+  rhinos.forEach((r) => {
+    r.draw();
+  });
+
+  aliens.forEach((a) => {
+    a.draw();
+  });
+
+  monsters.forEach((m) => {
+    m.draw();
+  });
+
+  // animais
+  cats.forEach((c) => {
+    c.draw();
+  });
+  dogs.forEach((d) => {
+    d.draw();
+  });
+
+  requestAnimationFrame(loop);
+}
+
+function buildGameShopsForGameCreators(gef) {
+  if (!gef) return;
+  const gameCreators = humans.filter((h) => h.role === "gameDev");
+  // número de lojas alvo = número de criadores de jogos
+  const targetShops = gameCreators.length;
+  if (gameShops.length >= targetShops) return;
+
+  const needed = targetShops - gameShops.length;
+  const radius = 60;
+  const angleStep = (Math.PI * 2) / Math.max(needed, 1);
+
+  for (let i = 0; i < needed; i++) {
+    const angle = i * angleStep;
+    const gx = gef.x + Math.cos(angle) * radius;
+    const gy = gef.y + Math.sin(angle) * radius;
+
+    if (
+      gx > 40 &&
+      gy > 40 &&
+      gx < canvas.width - 40 &&
+      gy < canvas.height - 40
+    ) {
+      gameShops.push(new GameShop(gx, gy));
+    }
+  }
+}
+
+// GEF constrói uma mina assim que existir ao menos um escavador e um GEF
+// (garante apenas uma mina compartilhada para todos os escavadores)
+function ensureMineExists() {
+  if (mines.length > 0) return;
+  const anyMiner = humans.find((h) => h.role === "miner");
+  const anyGef = gefs[0];
+  if (!anyMiner || !anyGef) return;
+
+  // posiciona a mina um pouco ao lado do GEF
+  const angle = Math.random() * Math.PI * 2;
+  const radius = 60;
+  const mx = anyGef.x + Math.cos(angle) * radius;
+  const my = anyGef.y + Math.sin(angle) * radius;
+  if (
+    mx > 40 &&
+    my > 40 &&
+    mx < canvas.width - 40 &&
+    my < canvas.height - 40
+  ) {
+    mines.push(new Mine(mx, my));
+  } else {
+    // fallback: centro da tela
+    mines.push(new Mine(canvas.width / 2, canvas.height / 2));
+  }
+}
+
+requestAnimationFrame(loop);
+
+// checa periodicamente se precisa criar a mina quando surgirem escavadores e GEFs
+setInterval(ensureMineExists, 500);
