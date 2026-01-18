@@ -2,19 +2,44 @@
 <html lang="pt-br">
 <head>
   <meta charset="UTF-8">
+
+  <!-- PWA / MOBILE -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#222222">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Vila Sandbox">
+
+  <!-- MANIFEST -->
+  <link rel="manifest" href="./manifest.json">
+
+  <!-- IOS ICON -->
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+
   <title>Sandbox Humanos vs Monstros</title>
-  <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#222">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
   <style>
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
+
+    /* Try to load a display font (fallbacks included); if Boombox isn't available, a bold display look is used */
+    @import url('https://fonts.googleapis.com/css2?family=Righteous&display=swap');
+
     body {
       margin: 0;
       background: #222;
       color: white;
       font-family: Arial, sans-serif;
-      overflow: hidden;
+      overflow: hidden; /* sem rolagem */
+
+      /* PWA TOUCH SAFETY */
+      overscroll-behavior: none;
+      touch-action: manipulation;
+      -webkit-user-select: none;
+      user-select: none;
     }
+
     #ui {
       background: #333;
       padding: 8px;
@@ -24,6 +49,7 @@
       align-items: center;
       justify-content: center;
     }
+
     button {
       padding: 6px 10px;
       cursor: pointer;
@@ -33,21 +59,125 @@
       color: #fff;
       font-size: 14px;
     }
+
     button:active {
       transform: scale(0.96);
       background: #777;
     }
+
     canvas {
       display: block;
       background: #111;
       width: 100vw;
+      height: calc(100vh - 56px); /* ocupa o resto da tela */
+      touch-action: none;
+    }
+
+    /* START SCREEN */
+    #startScreen {
+      position: absolute;
+      left: 0;
+      top: 56px; /* below top UI bar */
+      width: 100vw;
       height: calc(100vh - 56px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+      z-index: 40;
+    }
+
+    #startCard {
+      width: min(860px, 92vw);
+      max-width: 920px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.12));
+      border-radius: 14px;
+      padding: 28px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+      backdrop-filter: blur(6px);
+      text-align: center;
+      color: #fff;
+    }
+
+    #title {
+      font-family: 'Righteous', 'Segoe UI', Arial, sans-serif;
+      font-size: 48px;
+      letter-spacing: 1.5px;
+      margin: 6px 0 18px 0;
+      color: #fff;
+      text-transform: none;
+      text-shadow:
+        0 2px 0 rgba(0,0,0,0.7),
+        0 6px 18px rgba(255, 140, 0, 0.14),
+        0 0 26px rgba(255, 160, 40, 0.12),
+        0 0 8px rgba(255, 200, 80, 0.06);
+    }
+
+    #subtitle {
+      font-size: 14px;
+      color: rgba(255,255,255,0.8);
+      margin-bottom: 18px;
+    }
+
+    .startButtons {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .startBtn {
+      min-width: 120px;
+      padding: 12px 18px;
+      font-size: 16px;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+    }
+
+    .playBtn {
+      background: linear-gradient(90deg,#ff8a00,#ff5e62);
+      color: white;
+      box-shadow: 0 6px 18px rgba(255,90,60,0.18), inset 0 -2px 0 rgba(0,0,0,0.12);
+    }
+
+    .settingsBtn {
+      background: #2f2f3a;
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+
+    #settingsPanel {
+      margin-top: 14px;
+      display: none;
+      gap: 10px;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .toggleSwitch {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+
+    .smallNote {
+      font-size: 12px;
+      color: rgba(255,255,255,0.72);
+      margin-top: 8px;
+    }
+
+    .dimmed {
+      opacity: 0.9;
+      transition: opacity 220ms;
     }
   </style>
 </head>
+
 <body>
   <div id="ui">
-    <!-- botões e world selector (igual ao que você já tinha) -->
     <button data-mode="human">👤 Humano</button>
     <button data-mode="monster">👹 Monstro</button>
     <button data-mode="wood">🌲 Madeira</button>
@@ -63,7 +193,18 @@
     <button data-mode="gef">🧠 GEF</button>
     <button data-mode="rhino">🦏 Rinoceronte</button>
     <button data-mode="alien">👽 Alien</button>
+    <button data-mode="golem">🛡️ Golem de Ferro</button>
 
+    <!-- new ores -->
+    <button data-mode="topaz">🔶 Topázio</button>
+    <button data-mode="esmeralda">💚 Esmeralda</button>
+    <button data-mode="ametista">🔮 Ametista</button>
+    <button data-mode="peridote">🟢 Peridoto</button>
+    <button data-mode="aco">⚙️ Aço</button>
+    <button data-mode="aquamarino">🩵 Aquamarino</button>
+    <button data-mode="platina">⚪ Platina</button>
+
+    <!-- world selector -->
     <div id="worldSelector" style="display:flex; gap:6px; align-items:center; margin-left:6px;">
       <button data-world="earth" style="background:#2e7d32;">🌍 Terra</button>
       <button data-world="mars" style="background:#c1440e;">🔴 Marte</button>
@@ -71,6 +212,7 @@
     </div>
 
     <button id="pauseBtn" style="margin-left:4px;">⏸️</button>
+    <button id="resetBtn" style="margin-left:4px;background:#b71c1c;">↺ Reset</button>
     <button class="speedBtn" data-speed="1">1x</button>
     <button class="speedBtn" data-speed="2">2x</button>
     <button class="speedBtn" data-speed="4">4x</button>
@@ -78,20 +220,43 @@
     <span id="yokoDisplay" style="margin-left:8px;font-size:14px;color:#ffeb3b;">Yoko: 0</span>
   </div>
 
+  <div id="startScreen" aria-hidden="false">
+    <div id="startCard" role="dialog" aria-label="Tela inicial">
+      <div id="title">Vila Sandbox</div>
+      <div id="subtitle">Uma vila interativa — clique em Jogar para começar</div>
+
+      <div class="startButtons">
+        <button id="playBtn" class="startBtn playBtn">Jogar ▶</button>
+        <button id="settingsBtn" class="startBtn settingsBtn">Configurações ⚙️</button>
+      </div>
+
+      <div id="settingsPanel">
+        <label class="toggleSwitch">
+          <input id="musicToggle" type="checkbox" checked />
+          Música de fundo
+        </label>
+      </div>
+
+      <div class="smallNote">
+        Dica: use os botões na barra superior para spawnar unidades e mudar o mundo.
+      </div>
+    </div>
+  </div>
+
   <canvas id="game"></canvas>
 
-  <!-- seu script permanece igual -->
-  <script type="module" src="./main.js"></script>
+  <!-- background music (controls from main.js) -->
+  <audio id="bgMusic" loop src=""></audio>
 
-  <!-- registro do Service Worker -->
+  <!-- SERVICE WORKER -->
   <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js')
-          .then(reg => console.log('Service Worker registrado', reg))
-          .catch(err => console.error('Service Worker falhou', err));
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js");
       });
     }
   </script>
+
+  <script type="module" src="./main.js"></script>
 </body>
 </html>
